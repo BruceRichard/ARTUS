@@ -40,6 +40,9 @@ class TransDiffusionCombineModel(TransArticulatedBaseModule):
 
         self.use_shape_prior = self.tf_config.get('shape_prior', True)
         self.physics_cost_config = config.get('physics_guided_cost', {})
+        self.physics_guidance_train_enabled = bool(
+            config.get('physics_guidance', {}).get('training_enabled', False)
+        )
 
         Log.info('Using pretrained diffusion model: %s', config['diffusion_model']['pretrained_model_path'])
         self.diffusion = Diffusion.load_from_checkpoint(config['diffusion_model']['pretrained_model_path'], map_location='cpu')
@@ -180,11 +183,22 @@ class TransDiffusionCombineModel(TransArticulatedBaseModule):
         non_end_parent_idx = torch.arange(
             parent_token.shape[0], device=parent_token.device, dtype=torch.long
         )[end_token_mask]
-        pg_cost = self.calculate_physics_guided_cost(
-            pr_non_pad_articulated_info,
-            non_end_parent_token,
-            non_end_parent_idx,
-        )
+        if self.physics_guidance_train_enabled:
+            pg_cost = self.calculate_physics_guided_cost(
+                pr_non_pad_articulated_info,
+                non_end_parent_token,
+                non_end_parent_idx,
+            )
+        else:
+            zero = torch.zeros((), device=pr_non_pad_articulated_info.device)
+            pg_cost = {
+                'pg_loss': zero,
+                'contact_loss': zero,
+                'penetration_loss': zero,
+                'axis_unit_loss': zero,
+                'limit_order_loss': zero,
+                'origin_loss': zero,
+            }
 
         loss_ratio = self.op_config['loss_ratio']
         loss = loss_ratio['tf_loss'] * tf_loss          \

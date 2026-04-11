@@ -70,6 +70,34 @@ class _DiffusionModel(nn.Module):
 
         # calculate p2 reweighting
         register_buffer('p2_loss_weight', (p2_loss_weight_k + alphas_cumprod / (1 - alphas_cumprod)) ** -p2_loss_weight_gamma)
+        self.last_guidance_log = []
+
+    @staticmethod
+    def _should_apply_guidance(t, guidance_enabled, guidance_fn, guidance_interval):
+        if not guidance_enabled or guidance_fn is None:
+            return False
+        guidance_interval = max(1, int(guidance_interval))
+        return (int(t) % guidance_interval) == 0
+
+    def _compute_guidance_grad(self, x_t, t, cond, guidance_fn, guidance_ctx):
+        x_in = x_t.detach().requires_grad_(True)
+        with torch.enable_grad():
+            j_val = guidance_fn(x_in, t=t, cond=cond, guidance_ctx=guidance_ctx)
+            if not torch.is_tensor(j_val):
+                j_val = torch.tensor(float(j_val), device=x_in.device, dtype=x_in.dtype)
+            if j_val.ndim > 0:
+                j_val = j_val.mean()
+            grad = torch.autograd.grad(j_val, x_in, retain_graph=False, create_graph=False, allow_unused=False)[0]
+        return grad.detach(), j_val.detach()
+
+    def _compute_guidance_cost_no_grad(self, x_t, t, cond, guidance_fn, guidance_ctx):
+        with torch.no_grad():
+            j_val = guidance_fn(x_t, t=t, cond=cond, guidance_ctx=guidance_ctx)
+            if not torch.is_tensor(j_val):
+                j_val = torch.tensor(float(j_val), device=x_t.device, dtype=x_t.dtype)
+            if j_val.ndim > 0:
+                j_val = j_val.mean()
+        return j_val.detach()
 
     def predict_start_from_noise(self, x_t, t, noise):
         return (
@@ -83,14 +111,28 @@ class _DiffusionModel(nn.Module):
             extract(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
         )
 
-    @torch.no_grad()
-    def ddim_sample(self, dim, batch_size, noise=None, clip_denoised = True, traj=False, cond=None):
+    def ddim_sample(
+        self,
+        dim,
+        batch_size,
+        noise=None,
+        clip_denoised=True,
+        traj=False,
+        cond=None,
+        guidance_fn=None,
+        guidance_ctx=None,
+        guidance_weight=0.0,
+        guidance_interval=1,
+        guidance_enabled=False,
+        guidance_log=False,
+    ):
         batch, device, total_timesteps, sampling_timesteps, eta, objective = batch_size, self.betas.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta, self.objective
         times = torch.linspace(0., total_timesteps, steps = sampling_timesteps + 2)[:-1]
         times = list(reversed(times.int().tolist()))
         time_pairs = list(zip(times[:-1], times[1:]))
 
-        traj = []
+        traj_buffer = []
+        self.last_guidance_log = []
 
         x_T = default(noise, torch.randn(batch, dim, device = device))
 
@@ -101,7 +143,8 @@ class _DiffusionModel(nn.Module):
             time_cond = torch.full((batch,), time, device = device, dtype = torch.long)
 
             model_input = (x_T, cond) if cond is not None else x_T
-            pred_noise, x_start, *_ = self.model_predictions(model_input, time_cond)
+            with torch.no_grad():
+                pred_noise, x_start, *_ = self.model_predictions(model_input, time_cond)
 
             if clip_denoised:
                 x_start.clamp_(-1., 1.)
@@ -110,24 +153,44 @@ class _DiffusionModel(nn.Module):
             c = ((1 - alpha_next) - sigma ** 2).sqrt()
 
             noise = torch.randn_like(x_T) if time_next > 0 else 0.
+            x_next = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
 
-            x_T = x_start * alpha_next.sqrt() + \
-                  c * pred_noise + \
-                  sigma * noise
+            if self._should_apply_guidance(time, guidance_enabled, guidance_fn, guidance_interval):
+                grad_j, j_before = self._compute_guidance_grad(x_T, time_cond, cond, guidance_fn, guidance_ctx)
+                x_next = x_next - float(guidance_weight) * grad_j
+                if guidance_log:
+                    j_after = self._compute_guidance_cost_no_grad(x_next, time_cond, cond, guidance_fn, guidance_ctx)
+                    self.last_guidance_log.append({
+                        't': int(time),
+                        'j_before': float(j_before.item()),
+                        'j_after': float(j_after.item()),
+                    })
 
-            traj.append(x_T.clone())
+            x_T = x_next
+            traj_buffer.append(x_T.clone())
 
-        if traj:
-            return x_T, traj
-        else:
-            return x_T
+        return x_T, (traj_buffer if traj else None)
 
-    @torch.no_grad()
-    def sample(self, dim, batch_size, noise=None, clip_denoised = True, traj=False, cond=None):
+    def sample(
+        self,
+        dim,
+        batch_size,
+        noise=None,
+        clip_denoised=True,
+        traj=False,
+        cond=None,
+        guidance_fn=None,
+        guidance_ctx=None,
+        guidance_weight=0.0,
+        guidance_interval=1,
+        guidance_enabled=False,
+        guidance_log=False,
+    ):
 
         batch, device, objective = batch_size, self.betas.device, self.objective
 
-        traj = []
+        traj_buffer = []
+        self.last_guidance_log = []
 
         x_T = default(noise, torch.randn(batch, dim, device = device))
 
@@ -136,22 +199,31 @@ class _DiffusionModel(nn.Module):
             time_cond = torch.full((batch,), t, device = device, dtype = torch.long)
 
             model_input = (x_T, cond) if cond is not None else x_T
-            pred_noise, x_start, *_ = self.model_predictions(model_input, time_cond)
+            with torch.no_grad():
+                pred_noise, x_start, *_ = self.model_predictions(model_input, time_cond)
             if clip_denoised:
                 x_start.clamp_(-1., 1.)
 
             model_mean, _, model_log_variance = self.q_posterior(x_start = x_start, x_t = x_T, t = time_cond)
 
             noise = torch.randn_like(x_T) if t > 0 else 0. # no noise if t == 0
+            x_next = model_mean + (0.5 * model_log_variance).exp() * noise
 
-            x_T = model_mean + (0.5 * model_log_variance).exp() * noise
+            if self._should_apply_guidance(t, guidance_enabled, guidance_fn, guidance_interval):
+                grad_j, j_before = self._compute_guidance_grad(x_T, time_cond, cond, guidance_fn, guidance_ctx)
+                x_next = x_next - float(guidance_weight) * grad_j
+                if guidance_log:
+                    j_after = self._compute_guidance_cost_no_grad(x_next, time_cond, cond, guidance_fn, guidance_ctx)
+                    self.last_guidance_log.append({
+                        't': int(t),
+                        'j_before': float(j_before.item()),
+                        'j_after': float(j_after.item()),
+                    })
 
-            traj.append(x_T.clone())
+            x_T = x_next
+            traj_buffer.append(x_T.clone())
 
-        if traj:
-            return x_T, traj
-        else:
-            return x_T
+        return x_T, (traj_buffer if traj else None)
 
     def q_posterior(self, x_start, x_t, t):
         posterior_mean = (
@@ -241,24 +313,61 @@ class _DiffusionModel(nn.Module):
 
         return loss, loss_100, loss_1000, model_out, cond
 
-    def generate_conditional(self, cond):
+    def generate_conditional(
+        self,
+        cond,
+        guidance_fn=None,
+        guidance_ctx=None,
+        guidance_weight=0.0,
+        guidance_interval=1,
+        guidance_enabled=False,
+        guidance_log=False,
+    ):
         self.eval()
-        with torch.no_grad():
-            samp,_ = self.sample(dim=self.model.dim, batch_size=cond['text'].shape[0], traj=False, cond=cond)
+        samp, _ = self.sample(
+            dim=self.model.dim,
+            batch_size=cond['text'].shape[0],
+            traj=False,
+            cond=cond,
+            guidance_fn=guidance_fn,
+            guidance_ctx=guidance_ctx,
+            guidance_weight=guidance_weight,
+            guidance_interval=guidance_interval,
+            guidance_enabled=guidance_enabled,
+            guidance_log=guidance_log,
+        )
 
         return samp
 
-    def generate_conditional_ddim(self, cond):
+    def generate_conditional_ddim(
+        self,
+        cond,
+        guidance_fn=None,
+        guidance_ctx=None,
+        guidance_weight=0.0,
+        guidance_interval=1,
+        guidance_enabled=False,
+        guidance_log=False,
+    ):
         self.eval()
-        with torch.no_grad():
-            samp,_ = self.ddim_sample(dim=self.model.dim, batch_size=cond['text'].shape[0], traj=False, cond=cond)
+        samp, _ = self.ddim_sample(
+            dim=self.model.dim,
+            batch_size=cond['text'].shape[0],
+            traj=False,
+            cond=cond,
+            guidance_fn=guidance_fn,
+            guidance_ctx=guidance_ctx,
+            guidance_weight=guidance_weight,
+            guidance_interval=guidance_interval,
+            guidance_enabled=guidance_enabled,
+            guidance_log=guidance_log,
+        )
 
         return samp
 
     def generate_unconditional(self, num_samples):
         self.eval()
-        with torch.no_grad():
-            samp,_ = self.sample(dim=self.model.dim, batch_size=num_samples, traj=False, cond=None)
+        samp, _ = self.sample(dim=self.model.dim, batch_size=num_samples, traj=False, cond=None)
 
         return samp
 

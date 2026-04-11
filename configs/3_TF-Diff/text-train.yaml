@@ -90,7 +90,7 @@ optimizer_paramerter:
     th_loss: 5
     zl_loss: 2
     lt_loss: 0
-    pg_loss: 1
+    pg_loss: 0
     vggt_reg_loss: 0.5
     # vq_loss: 1
     # df_loss: 2
@@ -103,6 +103,9 @@ physics_guided_cost:
   axis_weight: 0.2
   limit_weight: 0.2
   origin_weight: 0.1
+
+physics_guidance:
+  training_enabled: false
 
 
 evaluation:

@@ -15,3 +15,14 @@ gensdf_latentcode_evaluator:
   max_batch: 262144         # 2 ^ 18
 
 number_of_trial: 20
+
+physics_guidance_inference:
+  enabled: true
+  weight_gamma: 0.1
+  interval_n: 2
+  dmax: 0.10
+  topk_neighbors: 16
+  surface_samples: 256
+  surface_temperature: 0.05
+  normal_weight: 0.0
+  log_cost: true
