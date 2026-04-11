@@ -1,0 +1,46 @@
+pretrained_model: train_root_dir/SDF/checkpoint/04-10-04PM-06-12/sdf_epoch=1999-loss=0.01446.ckpt
+
+seed: 123456790
+wandb:
+  use: false
+  project: SDF
+  entity: 1785115532-harbin-institute-of-technology
+
+default_root_dir: train_root_dir/SDF
+
+dataset_n_dataloader:
+  batch_size: 11
+  n_workers: 8
+
+  dataset_dir: data/datasets
+  samples_per_mesh: 16000
+  pc_size: 4096
+  uniform_sample_ratio: 0.3
+
+SdfModelSpecs:
+  tanh_act: False
+  skip_connection: True
+  hidden_dim: 512
+  latent_dim: 256
+  pn_hidden_dim: 128
+  num_layers: 9
+
+evaluation:
+  max_batch: 32768  # 2^18 32768
+  eval_mesh_output_path: train_root_dir/SDF/tempmesh
+  resolution: 256
+  count: 20
+  freq_epoch: 500
+  vis_epoch_freq: 5
+
+checkpoint:
+  path: train_root_dir/SDF/checkpoint
+  freq: 500
+
+# 1000001
+num_epochs: 10001
+kld_weight: 0.00001
+latent_std: 0.25
+latent_dim: 786
+
+sdf_lr: 0.0001

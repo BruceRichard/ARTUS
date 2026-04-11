@@ -1,0 +1,17 @@
+checkpoint_path: train_root_dir/Transformer_Diffusion/checkpoint/04-10-09PM-27-54/epoch=8899-loss=1.11569.ckpt
+
+OPTION: 1
+
+eval_output_path: log/ours/
+
+t5_max_sentence_length: 512
+
+evaluation:
+  sdf_model_path: train_root_dir/SDF/checkpoint/04-10-06PM-24-39/sdf_epoch=1999-loss=0.00691.ckpt
+
+gensdf_latentcode_evaluator:
+  gensdf_model_path: null
+  resolution: 16
+  max_batch: 262144         # 2 ^ 18
+
+number_of_trial: 20

@@ -1,0 +1,115 @@
+#base_on_model: train_root_dir/Transformer_Diffusion/checkpoint/12-25-11AM-37-11/epoch=1936-loss=0.05536.ckpt
+base_on_model: null
+
+seed: 1234567890
+wandb:
+  use: false
+  project: TF_Diffusion
+  entity: 1785115532-harbin-institute-of-technology
+
+default_root_dir: train_root_dir/Transformer_Diffusion
+# 1000001
+num_epochs: 10001
+
+dataset_n_dataloader:
+  n_workers: 4
+  batch_size: 48
+
+  dataset_path: data/datasets/4_transformer_dataset
+  cut_off: -1
+  enc_data_fieldname: description
+
+checkpoint:
+  path: train_root_dir/Transformer_Diffusion/checkpoint
+  #10000
+  freq: 100
+
+part_structure:
+  bounding_box: 6 # 3 + (3 + 3) # center + length of x, y, z (mean, logvar)
+  joint_data_origin: 3
+  joint_data_direction: 3
+  limit: 4
+  # condition: 128
+  condition: 128
+  latentcode: 768
+
+transformer_model_paramerter:
+  tree_position_embedding: true
+  shape_prior: true
+  tokenizer_hidden_dim: 4096
+  tokenizer_dropout: 0.1
+
+  n_head: 8
+  n_layer: 8
+  d_model: 1024
+  decoder_dropout: 0.1
+
+  position_embedding_dropout: 0.1
+  position_embedding_dim_single_emb: 64
+
+  ffn_hidden_dim: 4096
+  ffn_dropout: 0.1
+
+  # channel, weight, height
+  # vq_expand_dim: [32, 4, 4]
+  # n_embed: 256
+  # vq_beta: 0.25
+  # vq_loss_weight: 0.1
+  # before_vq_net_deepth: 4
+
+  encoder_kv_dim: 1024 # decided by pretrained encoder model.
+  post_encoder_deepth: 4
+  post_encoder_dropout: 0.2
+
+  # FastVGGT-inspired quality enhancement.
+  vggt_enhance:
+    enabled: true
+    salient_ratio: 0.35
+    refresh_alpha: 0.35
+    collapse_margin: 0.80
+
+  # condition_post_process_hidden_dim: 768
+  # condition_post_process_deepth: 2
+
+diffusion_model:
+  pretrained_model_path: train_root_dir/Diff/checkpoint/04-10-08PM-41-56/diffusion-epoch=0499-loss=0.25772.ckpt
+  # z_hat_dropout: 0.2
+
+optimizer_paramerter:
+  tf_lr: 1
+  scheduler_factor: 0.0015
+  scheduler_warmup: 30
+  betas: [0.9, 0.98]
+  eps: 1.0e-9
+
+  diff_lr: 1.0e-6
+
+  loss_ratio:
+    et_loss: 1
+    tf_loss: 10
+    th_loss: 5
+    zl_loss: 2
+    lt_loss: 0
+    pg_loss: 1
+    vggt_reg_loss: 0.5
+    # vq_loss: 1
+    # df_loss: 2
+
+physics_guided_cost:
+  dmax: 0.10
+  min_bbox_size: 1.0e-3
+  contact_weight: 1.0
+  penetration_weight: 2.0
+  axis_weight: 0.2
+  limit_weight: 0.2
+  origin_weight: 0.1
+
+
+evaluation:
+  sdf_model_path: train_root_dir/SDF/checkpoint/04-10-06PM-24-39/sdf_epoch=1999-loss=0.00691.ckpt
+  max_batch: 131072  # 2^17
+  z_batch: 256
+  eval_mesh_output_path: train_root_dir/SDF/tempmesh
+  resolution: 256
+  count: 20
+  freq: 2000
