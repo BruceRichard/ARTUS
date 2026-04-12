@@ -9,7 +9,11 @@ from glob import glob
 from pathlib import Path
 from tqdm import tqdm
 
-sys.path.append('../..')
+# Make imports robust to the current working directory.
+# Always append repo root resolved from this script file.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.append(str(REPO_ROOT))
 from model.Diffusion import Diffusion
 from utils import (to_cuda, tokenize_part_info,
                    generate_special_tokens, HighPrecisionJsonEncoder, str2hash)
