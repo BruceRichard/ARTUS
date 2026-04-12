@@ -14,6 +14,10 @@ from tqdm import tqdm
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
+
+DATA_ROOT = REPO_ROOT / 'data'
+DATASET_ROOT = DATA_ROOT / 'datasets'
+
 from model.Diffusion import Diffusion
 from utils import (to_cuda, tokenize_part_info,
                    generate_special_tokens, HighPrecisionJsonEncoder, str2hash)
@@ -34,7 +38,7 @@ def evaluate_latent_codes():
     mini_z_encoder = diffusion_model.z_mini_encoder
     mini_text_encoder = diffusion_model.text_mini_encoder
 
-    diffusion_dataset_path = Path('../datasets/2.1_text_n_latentcode')
+    diffusion_dataset_path = DATASET_ROOT / '2.1_text_n_latentcode'
 
     path_to_latent = {}
 
@@ -155,7 +159,10 @@ def process(shape_info_path:Path, transformer_dataset_path:Path, encoded_text_pa
 
     # Fetch the encoded text path.
     encoded_text_paths = list(filter(lambda x: x.stem.startswith(prefix_name), encoded_text_paths))
-    encoded_text_paths = list(map(lambda x : x.as_posix().replace('../', ''), encoded_text_paths))
+    encoded_text_paths = [
+        x.relative_to(DATA_ROOT).as_posix()
+        for x in encoded_text_paths
+    ]
     encoded_text_paths.sort()
 
     if len(encoded_text_paths) < 2:
@@ -186,13 +193,13 @@ def process(shape_info_path:Path, transformer_dataset_path:Path, encoded_text_pa
 
 def process_image_condition():
     result = {}
-    src_path = Path("../datasets/5_screenshot_encoded_real")
+    src_path = DATASET_ROOT / "5_screenshot_encoded_real"
     for npy_path in tqdm(list(src_path.glob('*.npy')), desc="screenshots "):
         shape_name = npy_path.stem
         shape_name = shape_name.split('-')[0]
 
         result[shape_name] = result.get(shape_name, [])
-        result[shape_name].append(npy_path.as_posix().replace('../', ''))
+        result[shape_name].append(npy_path.relative_to(DATA_ROOT).as_posix())
 
     return result
 
@@ -206,11 +213,11 @@ if __name__ == '__main__':
 
     best_diffusion_ckpt_point = args.diff_ckpt_path
 
-    transformer_dataset_path = Path('../datasets/4_transformer_dataset')
+    transformer_dataset_path = DATASET_ROOT / '4_transformer_dataset'
     shutil.rmtree(transformer_dataset_path, ignore_errors=True)
     transformer_dataset_path.mkdir(exist_ok=True)
 
-    all_json_paths = list(map(Path, glob('../datasets/1_preprocessed_info/*.json')))
+    all_json_paths = list((DATASET_ROOT / '1_preprocessed_info').glob('*.json'))
     if args.category is not None:
         shape_info_paths = [
             p for p in all_json_paths 
@@ -223,7 +230,7 @@ if __name__ == '__main__':
     # shape_info_paths = list(filter(lambda x : "Storage" in x.as_posix(), shape_info_paths))
     path_to_latent = evaluate_latent_codes()
 
-    encoded_text_path = Path('../datasets/3_encoded_text_condition')
+    encoded_text_path = DATASET_ROOT / '3_encoded_text_condition'
     encoded_text_paths = list(map(Path, glob((encoded_text_path / '*').as_posix())))
 
     shape_name_2_image_path = process_image_condition()
@@ -239,7 +246,12 @@ if __name__ == '__main__':
             Log.info("%s: %s", shape_info_path.as_posix(), status)
 
 
-    diffusion_dataset_path = Path('../datasets/2.1_text_n_latentcode')
+    diffusion_dataset_path = DATASET_ROOT / '2.1_text_n_latentcode'
+    if not (diffusion_dataset_path / 'meta.json').exists():
+        raise FileNotFoundError(
+            f"Cannot find diffusion dataset meta: {(diffusion_dataset_path / 'meta.json').as_posix()}. "
+            "Please run data/process_data_script/2.2_generate_diff_dataset.py first."
+        )
     diffusion_dataset_meta = json.loads((diffusion_dataset_path / 'meta.json').read_text())
 
     with open(transformer_dataset_path / 'meta.json', 'w') as f:
