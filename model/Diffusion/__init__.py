@@ -58,6 +58,40 @@ class Diffusion(TransArticulatedBaseModule):
             self.sdf = SDFAutoEncoder(sdf_config_content)
         self.sdf.eval()
 
+    @staticmethod
+    def _to_hwc_uint8(image: np.ndarray) -> np.ndarray:
+        img = np.asarray(image)
+        if img.dtype != np.uint8:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+        return img
+
+    def _log_image_compatible(self, image: np.ndarray, key: str = "Image") -> None:
+        image = self._to_hwc_uint8(image)
+
+        logger_list = []
+        if hasattr(self, "loggers") and self.loggers is not None:
+            logger_list.extend(list(self.loggers))
+        elif self.logger is not None:
+            logger_list.append(self.logger)
+
+        for logger in logger_list:
+            if hasattr(logger, "log_image"):
+                try:
+                    logger.log_image(key=key, images=[wandb.Image(image)])
+                    return
+                except Exception as e:
+                    Log.error(f"Error while logging image with wandb logger: {e}")
+
+            experiment = getattr(logger, "experiment", None)
+            if experiment is not None and hasattr(experiment, "add_image"):
+                try:
+                    experiment.add_image(key, image, global_step=self.global_step, dataformats='HWC')
+                    return
+                except Exception as e:
+                    Log.error(f"Error while logging image with tensorboard logger: {e}")
+
+        Log.warning("No compatible logger found for image logging.")
+
     def configure_optimizers(self):
         return torch.optim.Adam(list(self.model.parameters()) +
                                 list(self.text_mini_encoder.parameters()) +
@@ -154,7 +188,7 @@ class Diffusion(TransArticulatedBaseModule):
         images = np.concatenate(images, axis=0)
 
         try:
-            self.logger.log_image(key="Image", images=[wandb.Image(images)])
+            self._log_image_compatible(images, key="Image")
         except Exception as e:
             Log.error(f"Error while logging images: {e}")
 
