@@ -65,5 +65,5 @@ evaluation:
   max_batch: 8192  # 2^18
   eval_mesh_output_path: train_root_dir/Diff/tempmesh
   resolution: 256
-  count: 10
+  count: 8
   freq_epoch: 400

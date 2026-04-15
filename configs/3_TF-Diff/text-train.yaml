@@ -1,5 +1,5 @@
 #base_on_model: train_root_dir/Transformer_Diffusion/checkpoint/12-25-11AM-37-11/epoch=1936-loss=0.05536.ckpt
-base_on_model: null
+base_on_model: train_root_dir/Transformer_Diffusion/checkpoint/04-12-10PM-43-30/epoch=9099-loss=0.20302.ckpt
 
 seed: 1234567890
 wandb:
@@ -72,7 +72,7 @@ transformer_model_paramerter:
   # condition_post_process_deepth: 2
 
 diffusion_model:
-  pretrained_model_path: train_root_dir/Diff/checkpoint/04-10-08PM-41-56/diffusion-epoch=0499-loss=0.25772.ckpt
+  pretrained_model_path: null
   # z_hat_dropout: 0.2
 
 optimizer_paramerter:
@@ -109,7 +109,7 @@ physics_guidance:
 
 
 evaluation:
-  sdf_model_path: train_root_dir/SDF/checkpoint/04-10-06PM-24-39/sdf_epoch=1999-loss=0.00691.ckpt
+  sdf_model_path: null
   max_batch: 131072  # 2^17
   z_batch: 256
   eval_mesh_output_path: train_root_dir/SDF/tempmesh

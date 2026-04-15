@@ -1,4 +1,4 @@
-checkpoint_path: train_root_dir/Transformer_Diffusion/checkpoint/04-10-09PM-27-54/epoch=8899-loss=1.11569.ckpt
+checkpoint_path: train_root_dir/Transformer_Diffusion/checkpoint/04-13-11AM-02-14/epoch=8099-loss=0.09448.ckpt
 
 OPTION: 1
 
@@ -7,7 +7,7 @@ eval_output_path: log/ours/
 t5_max_sentence_length: 512
 
 evaluation:
-  sdf_model_path: train_root_dir/SDF/checkpoint/04-10-06PM-24-39/sdf_epoch=1999-loss=0.00691.ckpt
+  sdf_model_path: null
 
 gensdf_latentcode_evaluator:
   gensdf_model_path: null
@@ -17,7 +17,7 @@ gensdf_latentcode_evaluator:
 number_of_trial: 20
 
 physics_guidance_inference:
-  enabled: true
+  enabled: false
   weight_gamma: 0.1
   interval_n: 2
   dmax: 0.10

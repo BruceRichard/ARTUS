@@ -3,15 +3,15 @@ import torch
 import shutil
 import trimesh
 import numpy as np
-import os
 from tqdm import tqdm
 from pathlib import Path
-from torch.utils.data import DataLoader
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-from transformers import AutoTokenizer, T5EncoderModel
-
+import os
 import sys
-sys.path.append('../..')
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+
+from torch.utils.data import DataLoader
+from transformers import AutoTokenizer, T5EncoderModel
 from model.SDFAutoEncoder import SDFAutoEncoder
 from model.SDFAutoEncoder.dataloader import GenSDFDataset
 from utils.mylogging import Log
