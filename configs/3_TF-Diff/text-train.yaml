@@ -1,5 +1,5 @@
 #base_on_model: train_root_dir/Transformer_Diffusion/checkpoint/12-25-11AM-37-11/epoch=1936-loss=0.05536.ckpt
-base_on_model: train_root_dir/Transformer_Diffusion/checkpoint/04-12-10PM-43-30/epoch=9099-loss=0.20302.ckpt
+base_on_model: null
 
 seed: 1234567890
 wandb:
@@ -109,7 +109,7 @@ physics_guidance:
 
 
 evaluation:
-  sdf_model_path: null
+  sdf_model_path: train_root_dir/SDF/checkpoint/04-14-06PM-40-00/sdf_epoch=8499-loss=0.00209.ckpt
   max_batch: 131072  # 2^17
   z_batch: 256
   eval_mesh_output_path: train_root_dir/SDF/tempmesh

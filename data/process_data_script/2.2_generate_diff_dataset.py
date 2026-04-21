@@ -6,12 +6,20 @@ import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 import os
-import sys
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-
+from tqdm import tqdm
+from pathlib import Path
 from torch.utils.data import DataLoader
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 from transformers import AutoTokenizer, T5EncoderModel
+
+import sys
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.append(str(REPO_ROOT))
+
+DATA_ROOT = REPO_ROOT / 'data'
+DATASET_ROOT = DATA_ROOT / 'datasets'
+
 from model.SDFAutoEncoder import SDFAutoEncoder
 from model.SDFAutoEncoder.dataloader import GenSDFDataset
 from utils.mylogging import Log
@@ -29,9 +37,17 @@ def determine_latentcode_encoder(best_ckpt_path):
     return gensdf
 
 def evaluate_latent_codes(gensdf):
+    dataset_dir = DATASET_ROOT
+    if not (dataset_dir / 'meta.json').exists():
+        raise FileNotFoundError(
+            f"Cannot find dataset meta: {(dataset_dir / 'meta.json').as_posix()}. "
+            "Please run data/process_data_script/1_extract_from_raw_dataset.py and "
+            "data/process_data_script/2.1_generate_gensdf_dataset.py first."
+        )
+
     dataloader = DataLoader(
             GenSDFDataset(
-                    dataset_dir=Path('../datasets'), train=None,
+                    dataset_dir=dataset_dir, train=None,
                     samples_per_mesh=16000, pc_size=4096,
                     uniform_sample_ratio=0.3
                 ),
@@ -101,10 +117,10 @@ if __name__ == '__main__':
 
     gensdf_model = determine_latentcode_encoder(best_ckpt_path)
 
-    output_path = Path('../datasets/2.1_text_n_latentcode')
+    output_path = DATASET_ROOT / '2.1_text_n_latentcode'
     shutil.rmtree(output_path, ignore_errors=True)
     output_path.mkdir(parents=True, exist_ok=True)
-    mesh_info_path = Path('../datasets/1_preprocessed_info')
+    mesh_info_path = DATASET_ROOT / '1_preprocessed_info'
     all_json_paths = list(mesh_info_path.glob('*.json'))
     if args.category is not None:
         shape_info_paths = [
@@ -115,7 +131,7 @@ if __name__ == '__main__':
     else:
         shape_info_paths = all_json_paths
     
-    t5_cache_path = Path('../../cache/t5_cache')
+    t5_cache_path = REPO_ROOT / 'cache' / 't5_cache'
     t5_cache_path.mkdir(exist_ok=True, parents=True)
     t5_model_name = 'google-t5/t5-large'
     t5_batch_size = 16

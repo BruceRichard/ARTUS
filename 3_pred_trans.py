@@ -51,7 +51,7 @@ if __name__ == '__main__':
 
         # print(f"Found {len(obj_name_list)} text files in {target_folder_name}")
 
-        target_category_keyword = "Box"
+        target_category_keyword = "Table"
         num_objects = 100  
         fixed_experiment_seed = 31
 
@@ -76,7 +76,7 @@ if __name__ == '__main__':
                 obj_name_list.append(formatted_name)
 
         for obj_name in tqdm(obj_name_list, 'obj_list'):
-            output_path = Path('elog') / f"final_output" / f"ours_Box_noguide" / f"{obj_name}"
+            output_path = Path('elog') / f"final_output" / f"ours_Table" / f"{obj_name}"
             obj_infos = obj_name.split('_')
             text_content = (text_datasets / '_'.join(obj_infos[:2]) / (str(obj_infos[2])+'.txt')).read_text()
             print("Processing", obj_name)
