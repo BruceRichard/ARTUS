@@ -1,3 +1,77 @@
+# DecoArt: Structured State Decoupling for Physically Valid Articulated Object Generation
+
+DecoArt extends the ArtFormer-style articulated generation pipeline with inference-time physical evaluation and representation routing. The central idea is to keep the generator reusable, derive physical quantities from the structured state, and inject guidance only where the part representation needs it most.
+
+![DecoArt overview](docs/decoart/figure_1_overview_1.png)
+
+## Main Results
+
+Reported on held-out PartNet-Mobility and PM-Openable objects:
+
+| Method | PV-Rate (up) | Align (down) | Cons. (down) | No-Pen (down) | CD (down) | Axis Err. (down) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| CAGE | 51.3 | 0.157 | 0.285 | 0.081 | 0.028 | 16.4 |
+| ArtFormer | 62.1 | 0.103 | 0.214 | 0.052 | 0.024 | 12.1 |
+| GAOT | 64.8 | 0.096 | 0.203 | 0.049 | 0.022 | 12.8 |
+| PhysNAP | 59.4 | 0.116 | 0.231 | 0.061 | 0.025 | 13.5 |
+| DecoArt | **75.0** | **0.071** | **0.156** | **0.028** | 0.023 | **11.6** |
+
+The gain comes from three pieces working together: structured-state physical evaluation, representation routing, and plug-in inference guidance without retraining the generator.
+
+## Method Snapshot
+
+DecoArt computes physical validity directly from metadata fields already present in each part token: box geometry, joint origin, joint direction, motion limit, and parent relation.
+
+```text
+E_norm = 1 + n^T m
+E_pen  = -n^T(q - s) - delta_i
+E_tan  = ||(I - nn^T)(q - s)||_2
+```
+
+The part-wise physical cost is:
+
+```text
+J_i = -Avg[ rho * exp(-(E_tan + alpha * E_norm) / dmax) ]
+      + beta * Avg[ softplus(E_pen / tau_pen) ]
+```
+
+Representation routing assigns each token to `structure`, `physical`, or `detail` according to tree depth, subtree size, contact-support mismatch, and penetration severity.
+
+![State-derived contact](docs/decoart/figure_2_state_contact_1.png)
+
+![Representation routing](docs/decoart/figure_3_routing_1.png)
+
+## Quick Experiments
+
+Compute DecoArt physical/routing metrics on transformer metadata:
+
+```bash
+python experiments/decoart/build_state_metadata.py \
+  --input data/datasets/4_transformer_dataset \
+  --pattern "*.json" \
+  --output-dir experiments/decoart/outputs/train_state \
+  --bbox-format center_size
+```
+
+Compute metrics on generated samples:
+
+```bash
+python experiments/decoart/build_state_metadata.py \
+  --input elog/final_output/ours_Table \
+  --pattern "output.dat" \
+  --output-dir experiments/decoart/outputs/ours_table \
+  --bbox-format center_size
+```
+
+Compare no-guidance and guidance runs:
+
+```bash
+python experiments/decoart/compare_state_metrics.py \
+  --baseline experiments/decoart/outputs/no_guidance/decoart_state_metrics.jsonl \
+  --ours experiments/decoart/outputs/guidance/decoart_state_metrics.jsonl \
+  --output experiments/decoart/outputs/guidance_delta.json
+```
+
 ## Set up Environment
 
 ### Conda Env
@@ -135,52 +209,3 @@ Generate the example articulated object by:
 ```
 python 3_pred_trans.py -c configs/3_TF-Diff/text-eval.yaml
 ```
-
-## DecoArt Physical Evaluation & Representation Routing
-
-This fork adds DecoArt-style experiment utilities for physically valid articulated generation. The generator still follows the ArtFormer staged pipeline, while physical validity is evaluated from the structured state and can be used for inference-time guidance without retraining.
-
-![DecoArt overview](docs/decoart/figure_1_overview_1.png)
-
-The structured state of each part contains box geometry, joint origin/direction, motion limit, parent index, and geometry latent. From this metadata, `experiments/decoart` computes the paper's physical terms:
-
-```text
-E_norm = 1 + n^T m
-E_pen  = -n^T(q - s) - delta_i
-E_tan  = ||(I - nn^T)(q - s)||_2
-```
-
-It then reports `PV-Rate`, `Align`, `Cons.`, `No-Pen`, and a part-wise `J_i` cost. The same pass also computes representation routing scores and assigns each token to `structure`, `physical`, or `detail`, matching the DecoArt physical-evaluation plus representation-routing design.
-
-![State-derived contact](docs/decoart/figure_2_state_contact_1.png)
-
-Run the metadata evaluation on transformer training JSON:
-
-```bash
-python experiments/decoart/build_state_metadata.py \
-  --input data/datasets/4_transformer_dataset \
-  --pattern "*.json" \
-  --output-dir experiments/decoart/outputs/train_state \
-  --bbox-format center_size
-```
-
-Run it on generated samples:
-
-```bash
-python experiments/decoart/build_state_metadata.py \
-  --input elog/final_output/ours_Table \
-  --pattern "output.dat" \
-  --output-dir experiments/decoart/outputs/ours_table \
-  --bbox-format center_size
-```
-
-The evaluator writes `output.dat` by default during `3_pred_trans.py`, so generated samples can be measured directly. To compare no-guidance and guidance runs:
-
-```bash
-python experiments/decoart/compare_state_metrics.py \
-  --baseline experiments/decoart/outputs/no_guidance/decoart_state_metrics.jsonl \
-  --ours experiments/decoart/outputs/guidance/decoart_state_metrics.jsonl \
-  --output experiments/decoart/outputs/guidance_delta.json
-```
-
-![Representation routing](docs/decoart/figure_3_routing_1.png)

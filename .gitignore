@@ -12,6 +12,7 @@ extensions/
 TRELLIS/
 attachment/
 *.out
+*.pdf
 
 # Part B: gitignore for python projects in template.
 # Byte-compiled / optimized / DLL files
