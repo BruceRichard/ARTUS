@@ -398,6 +398,18 @@ class Evaluater():
         # We do not want start token.
         return processed_nodes[1:], atten_weights_list
 
+    @staticmethod
+    def _detach_for_pickle(obj):
+        if torch.is_tensor(obj):
+            return obj.detach().cpu()
+        if isinstance(obj, dict):
+            return {k: Evaluater._detach_for_pickle(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [Evaluater._detach_for_pickle(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(Evaluater._detach_for_pickle(v) for v in obj)
+        return obj
+
     def inference_to_output_path(self, text, output_path, enc_data=None, blender_generated_gif=False):
         output_path.mkdir(exist_ok=True, parents=True)
         processed_nodes, atten_weights_list = self.inference_from_text(text, enc_data)
@@ -405,9 +417,16 @@ class Evaluater():
         # for debug only.
         # processed_nodes, atten_weights_list = pickle.load(open('/ssd1/dengzhidong/.sym/final/ArtFormer/elog/Final_OP1_05-27-01PM-29-48/StorageFurniture_45243_1/0/output.dat', 'rb')), None
 
-        # output_data_path = output_path / "output.dat"
-        # with open(output_data_path, 'wb') as f: f.write(pickle.dumps(processed_nodes))
-        # Log.info("[Write] %s", output_data_path)
+        if self.eval_config.get('save_output_dat', True):
+            output_data_path = output_path / "output.dat"
+            with open(output_data_path, 'wb') as f:
+                f.write(pickle.dumps(self._detach_for_pickle(processed_nodes)))
+            Log.info("[Write] %s", output_data_path)
+
+            if self.last_guidance_log:
+                guidance_log_path = output_path / "physics_guidance_log.json"
+                guidance_log_path.write_text(json.dumps(self.last_guidance_log, indent=2))
+                Log.info("[Write] %s", guidance_log_path)
 
         output_tex_path = output_path / "input.txt"
         output_tex_path.write_text(text)

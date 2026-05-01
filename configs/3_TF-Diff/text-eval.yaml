@@ -15,6 +15,7 @@ gensdf_latentcode_evaluator:
   max_batch: 262144         # 2 ^ 18
 
 number_of_trial: 20
+save_output_dat: true
 
 physics_guidance_inference:
   enabled: false
