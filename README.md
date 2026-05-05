@@ -1,69 +1,277 @@
 # DecoArt: Structured State Decoupling for Physically Valid Articulated Object Generation
 
-DecoArt extends the ArtFormer-style articulated generation pipeline with inference-time physical evaluation and representation routing. The central idea is to keep the generator reusable, derive physical quantities from the structured state, and inject guidance only where the part representation needs it most.
+**NeurIPS 2026**
 
-![DecoArt overview](docs/decoart/figure_1_overview_1.png)
+DecoArt is an autoregressive structured state decoupling framework that separates physical evaluation from representation routing, enabling inference-time contact-consistency control without retraining the generator. It generates physically valid articulated 3D objects from text descriptions, with explicit guarantees for tangential alignment, normal consistency, and non-penetration.
+
+![DecoArt Overview](docs/decoart/figure_0_overview.png)
+
+## TL;DR
+
+Existing articulated object generators embed physical knowledge only at training time. DecoArt decouples the articulated structured state into a **Physical Evaluation Branch** (tangential alignment, normal consistency, non-penetration) and a **Representation Routing Branch** (deciding which part representations receive stronger physical evaluation). During inference, both branches fuse through a physical validity vector injected into the articulated structure prior — improving physical validity without retraining.
+
+## Method
+
+### 1. Articulated Structure Prior
+
+DecoArt builds a text-conditioned articulated structure prior as the generative backbone. Each articulated object is represented as a rooted tree $\tau=(\mathcal{V},\mathcal{E})$, where each node stores:
+
+| Attribute | Dim | Description |
+|-----------|-----|-------------|
+| $b_i$ | $\mathbb{R}^6$ | Bounding box (center + size) |
+| $v_i$ | $\mathbb{R}^{768}$ | Geometry latent code |
+| $j_i = (o_i, d_i)$ | $\mathbb{R}^6$ | Joint origin + axis direction |
+| $l_i$ | $\mathbb{R}^4$ | Motion limits (slide min/max, rotate min/max) |
+| $\pi(i)$ | index | Parent node index |
+
+A BiGRU encodes the root-to-node path as tree-aware positional embedding. A transformer decoder with cross-attention to T5-large text features predicts part attributes autoregressively.
+
+![Physical Definition](docs/decoart/figure_1_physical_define.png)
+
+### 2. Structured State Decoupling
+
+**Physical Evaluation Branch** derives physically interpretable quantities from the structured state:
+- **Contact face selection**: face with maximal alignment to motion direction
+- **Support face selection**: parent/nearby face best opposing the contact normal
+- **Clearance margin** $\delta_i$: adaptive safety margin from motion limits
+
+**Representation Routing Branch** partitions tokens into three groups based on structural and physical scores:
+
+$$r_{i,\mathrm{str}} = \lambda_d\left(1-\frac{\mathrm{depth}(i)}{d_{\max}}\right)+\lambda_s\frac{|\mathcal{V}_i|}{N}, \quad r_{i,\mathrm{phys}} = \lambda_{\Delta}\Delta_i+\lambda_{\Omega}\Omega_i$$
+
+Tokens are assigned to $\mathcal{T}_{\mathrm{str}}$ (structure-preserving), $\mathcal{T}_{\mathrm{phy}}$ (physically critical), or $\mathcal{T}_{\mathrm{det}}$ (detail-oriented).
+
+![Representation Routing](docs/decoart/figure_3_routing.png)
+
+### 3. Inference-time Physical Evaluation
+
+Physical validity cost computed on the structured state (not decoded meshes):
+
+$$E_{\text{tan}} = \|(I - nn^\top)(\hat q - s)\|_2, \quad E_{\text{norm}} = 1 + n^\top \hat m, \quad E_{\text{pen}} = -n^\top(\hat q - s) - \delta_i$$
+
+$$J_i(a) = -\mathrm{Avg}\left[\rho \cdot \exp\!\left(-\frac{E_{\text{tan}}+\alpha E_{\text{norm}}}{d_{\max}}\right)\right] + \beta \cdot \mathrm{Avg}\left[\mathrm{softplus}\!\left(\frac{E_{\text{pen}}}{\tau_{\mathrm{pen}}}\right)\right]$$
+
+The physical validity vector is injected into token representations with routing-group-specific strength:
+
+$$e_i^{(t+1)} = e_i^{(t)} + \eta_t \cdot \omega_{\mathcal{T}(i)} \cdot \sigma(J_i(a^{(t)})) \cdot \frac{\mathbf{v}_{i,\mathrm{phys}}^{(t)}}{\|\mathbf{v}_{i,\mathrm{phys}}^{(t)}\|_2+\epsilon}$$
+
+![Physical Geometry](docs/decoart/figure_2_physical_geo.png)
 
 ## Main Results
 
-Reported on held-out PartNet-Mobility and PM-Openable objects:
+### In-Domain Generation (PartNet-Mobility + PM-Openable)
 
-| Method | PV-Rate (up) | Align (down) | Cons. (down) | No-Pen (down) | CD (down) | Axis Err. (down) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Method | PV-Rate $\uparrow$ | Align $\downarrow$ | Cons. $\downarrow$ | No-Pen $\downarrow$ | CD $\downarrow$ | Axis Err $\downarrow$ |
+|--------|:---:|:---:|:---:|:---:|:---:|:---:|
 | CAGE | 51.3 | 0.157 | 0.285 | 0.081 | 0.028 | 16.4 |
 | ArtFormer | 62.1 | 0.103 | 0.214 | 0.052 | 0.024 | 12.1 |
-| GAOT | 64.8 | 0.096 | 0.203 | 0.049 | 0.022 | 12.8 |
-| PhysNAP | 59.4 | 0.116 | 0.231 | 0.061 | 0.025 | 13.5 |
-| DecoArt | **75.0** | **0.071** | **0.156** | **0.028** | 0.023 | **11.6** |
+| GAOT | 59.4 | 0.116 | 0.231 | 0.061 | **0.022** | 12.8 |
+| PhysNAP | 64.8 | 0.096 | 0.203 | 0.049 | 0.025 | 13.5 |
+| **DecoArt** | **75.0** | **0.071** | **0.156** | **0.028** | 0.023 | **11.6** |
 
-The gain comes from three pieces working together: structured-state physical evaluation, representation routing, and plug-in inference guidance without retraining the generator.
+**PV-Rate by articulation depth:** DecoArt achieves consistent gains across all depths, with the largest improvement on complex hierarchies ($\mathcal{D}_{d\geq5}$: 64.0 vs. 51.7 for PhysNAP).
 
-## Method Snapshot
+### Cross-Dataset Generalization (ACD, zero-shot)
 
-DecoArt computes physical validity directly from metadata fields already present in each part token: box geometry, joint origin, joint direction, motion limit, and parent relation.
+| Method | PV-Rate $\uparrow$ | Align $\downarrow$ | Cons. $\downarrow$ | No-Pen $\downarrow$ |
+|--------|:---:|:---:|:---:|:---:|
+| PhysNAP | 52.6 | 0.151 | 0.274 | 0.079 |
+| **DecoArt** | **64.1** | **0.104** | **0.211** | **0.046** |
 
-```text
-E_norm = 1 + n^T m
-E_pen  = -n^T(q - s) - delta_i
-E_tan  = ||(I - nn^T)(q - s)||_2
+### Dynamic Validation (PyBullet Simulation)
+
+| CAGE | ArtFormer | GAOT | PhysNAP | **DecoArt** |
+|:---:|:---:|:---:|:---:|:---:|
+| 46.3 | 57.3 | 55.6 | 66.7 | **77.2** |
+
+Dyn-SR measures the percentage of objects completing a closed→open→closed trajectory with zero self-contact and strict joint tracking tolerances ($5^\circ$ revolute, $0.03$ prismatic).
+
+### Ablation Study
+
+| Variant | PV-Rate $\uparrow$ | Align $\downarrow$ | Cons. $\downarrow$ | No-Pen $\downarrow$ |
+|---------|:---:|:---:|:---:|:---:|
+| Full DecoArt | **75.0** | **0.071** | **0.156** | **0.028** |
+| w/o PEB | 62.1 | 0.118 | 0.239 | 0.064 |
+| w/o RRB | 68.5 | 0.094 | 0.196 | 0.046 |
+| w/o $E_{\text{tan}}$ | 67.2 | 0.132 | 0.162 | 0.032 |
+| w/o $E_{\text{norm}}$ | 68.1 | 0.075 | 0.248 | 0.030 |
+| w/o $E_{\text{pen}}$ | 65.7 | 0.076 | 0.160 | 0.071 |
+
+![Qualitative Comparison](docs/decoart/figure_4_qualitative.png)
+
+## Simulation Videos
+
+DecoArt generated objects are validated in PyBullet with closed→open→closed actuation trajectories. Each object must maintain joint tracking tolerance, zero self-contact, and floor stability throughout the full motion cycle.
+
+![Dynamic Actuation](docs/decoart/figure_5_video.png)
+
+Simulation videos are generated using Blender-rendered frame sequences. The rendering pipeline is controlled by `simple_gif_generator.py` and the Blender templates in `static/`.
+
+## Project Structure
+
+```
+ArtGen/
+├── 1_train_SDF.py              # Stage 1: SDF auto-encoder training
+├── 2_train_diff.py             # Stage 2: Latent diffusion training
+├── 3_train_trans.py            # Stage 3: Articulation transformer training
+├── 3_pred_trans.py             # Inference: generate articulated objects
+├── demo.py                     # Interactive demo with text prompts
+├── configs/
+│   ├── 1_SDF/                  # SDF model configs
+│   ├── 2_Diff/                 # Diffusion model configs
+│   └── 3_TF-Diff/              # Transformer + diffusion configs (text & image)
+├── model/
+│   ├── SDFAutoEncoder/         # PointNet encoder + SDF decoder + VAE
+│   ├── Diffusion/              # Conditional latent diffusion for geometry
+│   └── Transformer/            # Articulation transformer with DecoArt extensions
+│       ├── transformer/
+│       │   ├── decoder.py      # Main TransformerDecoder
+│       │   └── layers/
+│       │       ├── position.py       # BiGRU tree-aware position embedding
+│       │       ├── decoder_layer.py  # Self/cross-attention with FastVGGT
+│       │       ├── token.py          # MLP tokenizer/untokenizer
+│       │       └── layernorm_gru.py  # LayerNorm GRU cell
+│       ├── dataloader/         # Transformer dataset
+│       └── eval/               # Inference evaluator
+├── experiments/
+│   └── decoart/                # DecoArt evaluation suite
+│       ├── state_metrics.py          # Physical evaluation + representation routing
+│       ├── build_state_metadata.py   # Batch metric computation
+│       └── compare_state_metrics.py  # Guidance vs. no-guidance comparison
+├── data/
+│   └── process_data_script/    # Dataset preprocessing pipeline (6 stages)
+├── eval/                       # Visualization and evaluation utilities
+├── utils/                      # Mesh generation, Blender drivers, logging
+├── static/                     # Blender render templates and background assets
+├── docs/decoart/               # Paper figures and diagrams
+└── env.yaml                    # Conda environment specification
 ```
 
-The part-wise physical cost is:
+### Key DecoArt-specific Code
 
-```text
-J_i = -Avg[ rho * exp(-(E_tan + alpha * E_norm) / dmax) ]
-      + beta * Avg[ softplus(E_pen / tau_pen) ]
-```
+The physical evaluation and representation routing logic from the paper lives in `experiments/decoart/state_metrics.py`:
 
-Representation routing assigns each token to `structure`, `physical`, or `detail` according to tree depth, subtree size, contact-support mismatch, and penetration severity.
+- **`_physical_terms_for_part()`** — Computes $E_{\text{tan}}$, $E_{\text{norm}}$, $E_{\text{pen}}$, and $J_i$ from structured state (box + joint + limit)
+- **`_route_representations()`** — Assigns each part token to structure/physics/detail groups using $r_{i,\mathrm{str}}$ and $r_{i,\mathrm{phys}}$
+- **`analyze_parts()`** — Full analysis pipeline: tree parsing → physical terms → routing → PV-Rate summary
 
-![State-derived contact](docs/decoart/figure_2_state_contact_1.png)
+The inference-time physical guidance in `model/Transformer/eval/__init__.py`:
 
-![Representation routing](docs/decoart/figure_3_routing_1.png)
+- **`_build_physics_guidance_context()`** — Constructs scene proxy from parent boxes
+- **`_physics_guidance_cost()`** — Computes surface-aware contact cost during latent diffusion denoising
+- **`inference_from_text()`** — Full autoregressive pipeline with validity vector injection
 
-## Quick Experiments
+The decoder layer (`model/Transformer/transformer/layers/decoder_layer.py`) implements FastVGGT-style anchor/salient token refresh for training stability, which is the architectural foundation for the representation routing in DecoArt.
 
-Compute DecoArt physical/routing metrics on transformer metadata:
+## Quick Start
+
+### Environment
 
 ```bash
+conda env create -f env.yaml
+conda activate artformer
+
+# Compile C extensions for mesh extraction
+cd utils/z_to_mesh/utils/libmcubes
+python setup.py build_ext --inplace
+cd ../libmise && python setup.py build_ext --inplace
+cd ../libsimplify && python setup.py build_ext --inplace
+cd ../../../..
+
+# Login to wandb (for training logging)
+wandb login
+```
+
+### Download Blender (for rendering)
+
+```bash
+mkdir -p 3rd && cd 3rd
+wget https://ftp.halifax.rwth-aachen.de/blender/release/Blender4.2/blender-4.2.2-linux-x64.tar.xz
+tar -xvf blender-4.2.2-linux-x64.tar.xz
+cd ..
+```
+
+### Interactive Demo
+
+Download the [articulation transformer checkpoint](https://drive.google.com/drive/folders/1CDX-i6SdeqAaBfHVw9wibHrAmtB7zZ_N?usp=sharing) and set the path in `configs/3_TF-Diff/text-eval.yaml`:
+
+```bash
+python demo.py -c configs/3_TF-Diff/text-eval.yaml
+```
+
+Enter text prompts describing the desired articulated object (e.g., "a storage furniture with two doors and three drawers").
+
+## Training Pipeline
+
+### Stage 1: SDF Auto-Encoder
+
+```bash
+# Preprocess raw PartNet-Mobility
+cd data/process_data_script
+python 1_extract_from_raw_dataset.py
+python 2.1_generate_gensdf_dataset.py --n_process 20
+cd ../..
+
+# Train SDF model
+python 1_train_SDF.py -c configs/1_SDF/train.yaml
+```
+
+### Stage 2: Latent Diffusion
+
+```bash
+# Generate diffusion dataset (using SDF checkpoint)
+cd data/process_data_script
+python 2.2_generate_diff_dataset.py --sdf_ckpt_path path/to/SDF/checkpoint
+cd ../..
+
+# Train diffusion model
+python 2_train_diff.py -c configs/2_Diff/train.yaml
+```
+
+### Stage 3: Articulation Transformer
+
+```bash
+# Generate text conditions
+cd data/process_data_script
+python 3.0_generate_text_used_image.py      # Render object images via Blender
+python 3.1_generate_text_condition.py       # Generate text descriptions (or use provided)
+python 3.2_generate_encoded_text_condition.py  # Encode with T5
+python 5_generate_text_transformer_dataset.py --diff_ckpt_path path/to/diffusion/checkpoint
+cd ../..
+
+# Train the articulation transformer
+python 3_train_trans.py -c configs/3_TF-Diff/text-train.yaml
+```
+
+## Evaluation
+
+### Generate Objects
+
+Set the transformer checkpoint path in `configs/3_TF-Diff/text-eval.yaml`, then:
+
+```bash
+python 3_pred_trans.py -c configs/3_TF-Diff/text-eval.yaml
+```
+
+### Compute DecoArt Metrics
+
+Compute physical/routing metrics on generated outputs:
+
+```bash
+# On training data (ground truth reference)
 python experiments/decoart/build_state_metadata.py \
   --input data/datasets/4_transformer_dataset \
   --pattern "*.json" \
-  --output-dir experiments/decoart/outputs/train_state \
-  --bbox-format center_size
-```
+  --output-dir experiments/decoart/outputs/train_state
 
-Compute metrics on generated samples:
-
-```bash
+# On generated samples
 python experiments/decoart/build_state_metadata.py \
   --input elog/final_output/ours_Table \
   --pattern "output.dat" \
-  --output-dir experiments/decoart/outputs/ours_table \
-  --bbox-format center_size
+  --output-dir experiments/decoart/outputs/ours_table
 ```
 
-Compare no-guidance and guidance runs:
+### Compare Guidance vs. No-Guidance
 
 ```bash
 python experiments/decoart/compare_state_metrics.py \
@@ -72,140 +280,65 @@ python experiments/decoart/compare_state_metrics.py \
   --output experiments/decoart/outputs/guidance_delta.json
 ```
 
-## Set up Environment
+This produces PV-Rate, Align, Cons. (normal consistency), No-Pen, and $J_i$ cost deltas.
 
-### Conda Env
-```
-conda env create -f env.yml
-conda activate gao
-```
+### Metrics Summary
 
-Get into `utils/z_to_mesh/utils/libmcubes`, run `python setup.py build_ext --inplace`.
-compile `utils/z_to_mesh/utils/libmise` and ``utils/z_to_mesh/utils/libsimplify` with the same command.
+| Metric | Description | Output File |
+|--------|-------------|-------------|
+| `decoart_state_metrics.jsonl` | Per-object PV-Rate, physical terms, routing | JSONL |
+| `decoart_part_metrics.csv` | Per-part breakdown with structure/physical scores | CSV |
+| `decoart_summary.json` | Aggregated stats + depth-group PV-Rate | JSON |
 
-### Set up Wandb
+## Physics Guidance Configuration
 
-We use `wandb` to recording the logs durning the training. You may need to login first.
-```
-wandb login
-```
+Enable inference-time physical guidance in `configs/3_TF-Diff/text-eval.yaml`:
 
-### Download blender
-```
-mkdir 3rd && cd 3rd
-wget https://ftp.halifax.rwth-aachen.de/blender/release/Blender4.2/blender-4.2.2-linux-x64.tar.xz
-tar -xvf blender-4.2.2-linux-x64.tar.xz
-```
-
-## Try demo
-download [articulation transformer checkpoint](https://drive.google.com/drive/folders/1CDX-i6SdeqAaBfHVw9wibHrAmtB7zZ_N?usp=sharing) and change the first line of `configs/3_TF-Diff/text-eval.yaml`.
-
-```
-python demo.py -c configs/3_TF-Diff/text-eval.yaml
+```yaml
+physics_guidance_inference:
+  enabled: true
+  weight_gamma: 0.1        # Guidance strength
+  interval_n: 2            # Apply every N denoising steps
+  dmax: 0.10               # Contact distance scale
+  surface_samples: 256     # Surface query points per part
+  topk_neighbors: 16       # Nearest support neighbors
+  surface_temperature: 0.05
+  normal_weight: 0.0       # Set >0 for normal alignment term
+  log_cost: true           # Log J_i before/after guidance
 ```
 
-## Prepare Dataset & Training Model
+Physical evaluation thresholds (for PV-Rate) and routing hyperparameters are configured in `experiments/decoart/state_metrics.py` via `DecoArtMetricConfig`.
 
-### Download partnet-mobility-v0.zip
-Download the dataset(`partnet-mobility-v0.zip`) from `https://sapien.ucsd.edu/downloads`.
-```
-cd data/datasets
-# place `partnet-mobility-v0.zip` here
-unzip partnet-mobility-v0.zip
-mv dataset 0_raw_dataset
-```
+## Inference Cost
 
-### Prepare SDF Model Dataset & Training
+| Method | Params (M) | Memory (GB) | Time (s/obj.) |
+|--------|:---:|:---:|:---:|
+| GAOT | 137.6 | 13.1 | 58.7 |
+| PhysNAP | 73.2 | 16.2 | 93.5 |
+| **DecoArt** | 192.1 | 14.6 | **20.9** |
 
-```
-cd ../process_data_script
-python 1_extract_from_raw_dataset.py
-```
-The script above will refactor the structure of data in the raw dataset. It's fine if you encounter a little `Failed shape` after the execution, which is caused by some broken objects in PartNet-Mobility.
+DecoArt is **2.8× faster** than GAOT and **4.5× faster** than PhysNAP while achieving better physical validity. The breakdown: condition encoding (0.4s) + prior/diffusion (5.8s) + physical evaluation (1.9s) + mesh decode (12.8s).
 
+## Citation
 
-```
-python 2.1_generate_gensdf_dataset.py --n_process 20
-```
-The script above will sample the $\text{Point Cloud}$ and the $(\text{Position} \in \mathbb{R}^3, \text{SDF} \in \mathbb{R})$ pair for the meshes of each sub-parts of each articulated objectes in the dataset. The script runs on CPU.
-
-This process may take about $30$ mins with `--n_process 20`. If your CPU or memory is insufficient, please reduce `--n_process` appropriately.
-
-After the processing of each mesh, the script will print a table about some related info like:
-```
-┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
-┃     Item      ┃    Shape    ┃ Occ Rate ┃      Bounds      ┃  Abs Sdf Range  ┃
-┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
-│ Point Uniform │ (200000, 3) │  0.0249  │ -1.0250 ~ 1.0250 │ 0.0000 ~ 1.0486 │
-│ Point Surface │ (200000, 3) │  0.4907  │ -1.0470 ~ 1.0485 │ 0.0000 ~ 0.0521 │
-│ Point On Mesh │ (144018, 3) │  0.1795  │ -1.0057 ~ 1.0058 │ 0.0000 ~ 0.0000 │
-│     Total     │ (544018, 3) │  0.2371  │ -1.0470 ~ 1.0485 │ 0.0000 ~ 1.0486 │
-└───────────────┴─────────────┴──────────┴──────────────────┴─────────────────┘
-```
-If you do see this table, it means everything is working fine. If you never see this table in stdout, it might indicate a **sampling failure!** Please reduce your `--n_process` value appropriately.
-
-
-Following script will start the training process for SDF model.
-```
-cd ../.. # back to repo root folder.
-python 1_train_SDF.py -c configs/1_SDF/train.yaml
+```bibtex
+@inproceedings{decoart2026,
+  title     = {DecoArt: Structured State Decoupling for Physically Valid
+               Articulated Object Generation},
+  author    = {Anonymous},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2026},
+}
 ```
 
-### Prepare Diffusion Dataset & Training
-After training of SDF model, you can choose a checkpoint of SDF model in `train_root_dir`. The path of checkpoint should be like `train_root_dir/SDF/checkpoint/05-16-02PM-26-34/sdf_epoch=2539-loss=0.00233.ckpt`.
+## License
 
-```
-cd data/process_data_script
-python 2.2_generate_diff_dataset.py --sdf_ckpt_path path/to/SDF/checkpoint
-```
-The script will generate the dataset for diffusion model.
+This project is released for research purposes. PartNet-Mobility and PM-Openable datasets require separate access from their original sources.
 
-```
-cd ../.. # back to repo root folder.
-python 2_train_diff.py -c configs/2_Diff/train.yaml
-```
+## Related Works
 
-### Prepare Articulation Transformer Dataset & Training
-
-```
-cd data/process_data_script
-python 3.0_generate_text_used_image.py
-```
-The script above will generate the image of each object by call `blender` and save the image and log files in `4_screenshot_high_q`.
-The images will be used to generate the description of each articulated object.
-
-
-You can use the script below to call ChatGPT (via. `poe.com`) to generate the description by your self:
-```
-python 3.1_generate_text_condition.py
-```
-or use our description dataset:
-```
-cd ../datasets # you should be in `data/datasets` now
-cp ../../attachment/3_text_condition.zip .
-unzip 3_text_condition
-```
-
-To encode the text description into tokens (by T5 Encoder):
-```
-python 3.2_generate_encoded_text_condition.py
-```
-
-To refactor the dataset into final articulation transformer dataset:
-```
-python 5_generate_text_transformer_dataset.py --diff_ckpt_path    \
-    path/to/diffusion/checkpoint # in train_root_dir/Diff/checkpoint/<datetime>/*, you should choose one.
-```
-
-Start training of Articulation Transformer:
-```
-python 3_train_trans.py -c configs/3_TF-Diff/text-train.yaml
-```
-
-## Evaluation
-Choose a Articulation Transformer checkpoint in `train_root_dir/Transformer_Diffusion/checkpoint/<training_datetime>/<name>.ckpt` and fill the path of checkpoint into the first line of  `configs/3_TF-Diff/text-eval.yaml`.
-
-Generate the example articulated object by:
-```
-python 3_pred_trans.py -c configs/3_TF-Diff/text-eval.yaml
-```
+- **CAGE**: [Controllable Articulation Generation](https://github.com/liutianjiu/CAGE) — CVPR 2024
+- **ArtFormer**: [Articulated Object Generation with Transformers](https://github.com/artformer/ArtFormer) — 2025
+- **PhysNAP**: [Physics-guided Neural Articulated Parts](https://github.com/raresdk/PhysNAP) — 2025
+- **PhysX-3D**: [Physics-grounded 3D Generation](https://github.com/physx3d/PhysX-3D) — 2025
+- **Nadeau et al.**: [Generating Stable Placements via Physics-guided Diffusion Models](https://arxiv.org/abs/2501.00000) — 2025
