@@ -191,16 +191,6 @@ tar -xvf blender-4.2.2-linux-x64.tar.xz
 cd ..
 ```
 
-### Interactive Demo
-
-Download the [articulation transformer checkpoint](https://drive.google.com/drive/folders/1CDX-i6SdeqAaBfHVw9wibHrAmtB7zZ_N?usp=sharing) and set the path in `configs/3_TF-Diff/text-eval.yaml`:
-
-```bash
-python demo.py -c configs/3_TF-Diff/text-eval.yaml
-```
-
-Enter text prompts describing the desired articulated object (e.g., "a storage furniture with two doors and three drawers").
-
 ## Training Pipeline
 
 ### Stage 1: SDF Auto-Encoder

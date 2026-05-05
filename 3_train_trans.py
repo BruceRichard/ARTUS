@@ -19,7 +19,7 @@ import os
 # cmd to clean up the cache: `wandb artifact cache cleanup 1GB`
 os.environ['WANDB_CACHE_DIR'] = (Path() / 'wandb/cache').resolve().as_posix()
 os.environ['WANDB_DATA_DIR'] = (Path() / 'wandb/data').resolve().as_posix()
-os.environ['WANDB_API_KEY'] = '5dc1a2e658c0c37de621f76763c96805cc8bc8d0'
+os.environ['WANDB_API_KEY'] = ''
 import wandb
 
 os.environ['HTTP_PROXY'] = 'http://127.0.0.1:7897'
