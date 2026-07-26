@@ -98,6 +98,74 @@ python experiments/decoart/compare_state_metrics.py \
 
 Use the resulting `pv_rate`, `align`, `normal`, `penetration`, and `j_cost` values in the paper tables.
 
+## Inference-time Structured Guidance
+
+The executable Eq. (13) implementation is in `torch_guidance.py` and is
+called from `model/Transformer/eval/__init__.py` after every tree-expansion
+round. Its code-grounded validity vector is
+
+```text
+v_i_phys = -d J_i(D_state(e_i)) / d e_i
+```
+
+The default fixed intervention coefficients are:
+
+```text
+[omega_str, omega_phy, omega_det] = [0.50, 1.00, 0.25]
+```
+
+The direction is normalized before applying the cost severity and routing
+coefficient. A backtracking step accepts an intervention only when the
+evaluated part-wise physical cost does not increase.
+
+## Rebuttal Controls
+
+Generate matched configs for correct/random/uniform routing, normalized state
+noise at 1%/3%/5%, and routing/support corruption at 10%/20%/30%:
+
+```bash
+python experiments/decoart/make_rebuttal_configs.py
+```
+
+Run every generated config with the same object set and per-sample seeds:
+
+```bash
+for config in configs/3_TF-Diff/rebuttal/*.yaml; do
+  python 3_pred_trans.py -c "$config"
+done
+```
+
+Aggregate five-repeat PV-Rate, physical errors, routing counts, and paired
+pre/post-intervention costs:
+
+```bash
+python experiments/decoart/summarize_rebuttal_runs.py \
+  --root elog/final_output \
+  --conditions routing_correct routing_random routing_uniform \
+  --output experiments/decoart/outputs/rebuttal_summary.json
+```
+
+Evaluate decoded meshes and calculate the state-to-mesh Spearman correlations:
+
+```bash
+python experiments/decoart/mesh_proxy_correlation.py \
+  --input elog/final_output/routing_correct \
+  --output experiments/decoart/outputs/mesh_state_correlation.json
+```
+
+Run closed--open--closed dynamic validation:
+
+```bash
+python experiments/decoart/pybullet_dynamic_eval.py \
+  --input elog/final_output/routing_correct \
+  --output experiments/decoart/outputs/dynamic_routing_correct.json
+```
+
+Repeat the last command for stress-condition directories to obtain their
+corresponding Dyn-SR. The dynamic JSON can also be passed to
+`mesh_proxy_correlation.py --dynamic-results` to compare the mean state cost
+of PyBullet-successful and failed objects.
+
 ## Paper Figures
 
 The project-level README references figures exported from `DecoArt.pdf`:

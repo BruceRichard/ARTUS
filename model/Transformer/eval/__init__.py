@@ -4,7 +4,6 @@ import copy
 import torch
 import json
 import time
-import random
 import pickle
 
 from pathlib import Path
@@ -18,15 +17,11 @@ from ..dataloader import TransDiffusionDataset
 from .. import TransDiffusionCombineModel
 from model.SDFAutoEncoder import SDFAutoEncoder
 
-from utils import untokenize_part_info, generate_gif_toy, fit_into_bounding_box
+from utils import untokenize_part_info, generate_gif_toy
 from utils.por_cuda import POR
-import utils.mesh as MeshUtils
 from utils.mylogging import Log
 from utils.z_to_mesh import GenSDFLatentCodeEvaluator
-
-import sys
-sys.path.append('../../..')
-from eval.visualize import visualize_obj_high_q
+from experiments.decoart.torch_guidance import guide_part_representations
 
 class Evaluater():
     def __init__(self, eval_config):
@@ -37,6 +32,9 @@ class Evaluater():
         self.physics_guidance_enabled = bool(self.physics_guidance_cfg.get('enabled', False))
         self._physics_query_cache = {}
         self.last_guidance_log = []
+        self.structured_guidance_cfg = self.eval_config.get('structured_state_guidance', {})
+        self.structured_guidance_enabled = bool(self.structured_guidance_cfg.get('enabled', False))
+        self.last_structured_guidance_log = []
 
         Log.info("Loading model %s", TransDiffusionCombineModel)
         self.model = TransDiffusionCombineModel.load_from_checkpoint(eval_config['checkpoint_path'])
@@ -286,11 +284,19 @@ class Evaluater():
             'latent': torch.zeros((768)).unsqueeze(0).to(self.device)
         }
         round = 1
+        inference_seed = int(torch.initial_seed() % (2 ** 31 - 1))
+        max_generation_rounds = int(
+            self.eval_config.get(
+                'max_generation_rounds',
+                max(2, int(self.dataset.max_count_token) + 1),
+            )
+        )
         Log.info('[2] Generate nodes')
         atten_weights_list = []
+        self.last_structured_guidance_log = []
 
         use_shape_prior = True
-        while True:
+        while round <= max_generation_rounds:
             current_length = exist_node['token'].size(0)
             Log.info('   - Generate nodes round: %s, part count: %s', round, exist_node['token'].size(0))
             with torch.no_grad():
@@ -311,32 +317,76 @@ class Evaluater():
             if not torch.any(end_token_mask):
                 break
 
-            articulated_info = output['articulated_info'][end_token_mask]
-
+            fa_idx = torch.arange(end_token_mask.shape[0], device=self.device)
+            fa_idx = fa_idx[end_token_mask]
             condition = output['condition']
+            if self.structured_guidance_enabled:
+                candidate_hidden = output['hidden_tokens'][end_token_mask]
+                guidance_result = guide_part_representations(
+                    candidate_hidden,
+                    self.model.transformer.decode_hidden,
+                    exist_node['token'][:, :16],
+                    exist_node['fa'],
+                    fa_idx,
+                    self.structured_guidance_cfg,
+                    seed=(
+                        int(self.structured_guidance_cfg.get('seed', 2026))
+                        + inference_seed
+                        + round * 1009
+                    ),
+                )
+                articulated_info = guidance_result.decoded['articulated_info']
+                condition = guidance_result.decoded['condition']
+                round_log = dict(guidance_result.log)
+                round_log['round'] = round
+                round_log['candidate_count'] = int(candidate_hidden.shape[0])
+                self.last_structured_guidance_log.append(round_log)
+                Log.info(
+                    "   - Structured guidance: active=%s, J %.6f -> %.6f, routes=%s",
+                    round_log['active_count'],
+                    round_log.get('j_pre', 0.0),
+                    round_log.get('j_post', 0.0),
+                    round_log.get('route_counts', {}),
+                )
+            else:
+                articulated_info = output['articulated_info'][end_token_mask]
+                if isinstance(condition, dict):
+                    condition = {
+                        key: value[end_token_mask]
+                        for key, value in condition.items()
+                    }
+                else:
+                    condition = condition[end_token_mask]
+
             if isinstance(condition, dict):
-                pred_text_hat = condition['text_hat'][end_token_mask] # torch.Size([1, 64])
-                pred_z_logits = condition['z_logits'][end_token_mask] # torch.Size([1, 4, 128])
+                pred_text_hat = condition['text_hat'] # torch.Size([1, 64])
+                pred_z_logits = condition['z_logits'] # torch.Size([1, 4, 128])
                 q_z, _KL, _perplexity, _logits = self.z_mini_encoder.forward_with_logits_or_x(tau=0.5, logits=pred_z_logits)
                 latent_code = None
             else:
-                latent_code = condition[end_token_mask] # torch.Size([1, 768])
+                latent_code = condition # torch.Size([1, 768])
                 pred_text_hat = torch.zeros((64)).unsqueeze(0).to(self.device)
                 q_z = None
                 use_shape_prior = False
 
             result = articulated_info
 
-            fa_idx = torch.arange(end_token_mask.shape[0], device=self.device)
-            fa_idx = fa_idx[end_token_mask]
-
             exist_node['fa'] = torch.cat((exist_node['fa'], fa_idx), dim=0)
             exist_node['token'] = torch.cat((exist_node['token'], result), dim=0)
 
-            if pred_text_hat is not None:   exist_node['text_hat'] = torch.cat((exist_node['text_hat'], pred_text_hat), dim=0)
-            if q_z is not None:             exist_node['z_hat'] = torch.cat((exist_node['z_hat'], q_z), dim=0)
-            if latent_code is not None:     exist_node['latent'] = torch.cat((exist_node['latent'], latent_code), dim=0)
+            if pred_text_hat is not None:
+                exist_node['text_hat'] = torch.cat((exist_node['text_hat'], pred_text_hat), dim=0)
+            if q_z is not None:
+                exist_node['z_hat'] = torch.cat((exist_node['z_hat'], q_z), dim=0)
+            if latent_code is not None:
+                exist_node['latent'] = torch.cat((exist_node['latent'], latent_code), dim=0)
 
+            round += 1
+        else:
+            Log.warning(
+                "Reached max_generation_rounds=%s before every branch emitted an end token.",
+                max_generation_rounds,
+            )
 
         Log.info('[3] reconstruct latent code with condition')
         if use_shape_prior:
@@ -384,7 +434,8 @@ class Evaluater():
             part_info = untokenize_part_info(token)
 
             z = torch.tensor(part_info['latent_code']).to(self.device)
-            if need_mesh: part_info['mesh'] = self.latentcode_evaluator.generate_mesh(z.unsqueeze(0))
+            if need_mesh:
+                part_info['mesh'] = self.latentcode_evaluator.generate_mesh(z.unsqueeze(0))
             # import pdb; pdb.set_trace()
             part_info['z'] = z
             # raw_points_sdf, rho = self.latentcode_evaluator.generate_uniform_point_cloud_inside_mesh(z.unsqueeze(0))
@@ -427,6 +478,10 @@ class Evaluater():
                 guidance_log_path = output_path / "physics_guidance_log.json"
                 guidance_log_path.write_text(json.dumps(self.last_guidance_log, indent=2))
                 Log.info("[Write] %s", guidance_log_path)
+            if self.last_structured_guidance_log:
+                structured_log_path = output_path / "structured_guidance_log.json"
+                structured_log_path.write_text(json.dumps(self.last_structured_guidance_log, indent=2))
+                Log.info("[Write] %s", structured_log_path)
 
         output_tex_path = output_path / "input.txt"
         output_tex_path.write_text(text)
@@ -467,10 +522,10 @@ class Evaluater():
                             bar_prompt="   - Generate Frames")
             Log.info('[5] Done')
 
-        output_json_path = (Path(self.eval_output_path) / f'output.json')
+        output_json_path = (Path(self.eval_output_path) / 'output.json')
         output_json_path.write_text('{"text": "' + text + '"}')
 
-        output_data_path = (Path(self.eval_output_path) / f'output.data')
+        output_data_path = (Path(self.eval_output_path) / 'output.data')
         with open(output_data_path, 'wb') as f:
             f.write(pickle.dumps(list_processed_nodes))
         Log.info("Saved data checkpoint %s.", output_data_path.as_posix())

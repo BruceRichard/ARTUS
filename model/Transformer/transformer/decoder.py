@@ -1,10 +1,8 @@
 import torch
 from torch import nn
-from rich import print
-from functools import reduce
 
 from .layers.decoder_layer import DecoderLayer
-from .layers.post_encoder import PostEncoder, ResnetBlockFC
+from .layers.post_encoder import PostEncoder
 from .layers.token import MLPTokenizer, MLPUnTokenizer
 from .layers.position import PositionGRUEmbedding
 # from .layers.vq_embedding import VQEmbedding
@@ -49,13 +47,15 @@ class TransformerDecoder(nn.Module):
         else:
             # For ablation study.
             Log.critical("Didn't Use PositionGRUEmbedding")
-            import time; time.sleep(3)
+            import time
+            time.sleep(3)
             self.position_embedding = None
 
         self.use_shape_prior = self.m_config.get('shape_prior', True)
         if not self.use_shape_prior:
             Log.critical("Didn't Use use_shape_prior")
-            import time; time.sleep(3)
+            import time
+            time.sleep(3)
 
 
         # self.expand_latent_dim = reduce(lambda x, y: x * y, self.m_config['vq_expand_dim'])
@@ -101,6 +101,45 @@ class TransformerDecoder(nn.Module):
         # mask = torch.tril(mask) # no need mask
         return mask
 
+    def decode_hidden(self, tokens):
+        """Decode flattened transformer representations into part predictions.
+
+        Keeping this operation public allows inference-time physical guidance
+        to differentiate the structured-state cost with respect to the current
+        token representation without updating model parameters.
+        """
+        end_token_logits = self.end_token_logits(tokens).squeeze(-1)
+
+        decoded_tokens = self.untokenizer(tokens)
+        conditions = decoded_tokens[:, -self.dim_condition:]
+        raw_articulated_info = decoded_tokens[:, :-self.dim_condition]
+
+        if self.use_shape_prior:
+            text_hat_condition = self.to_text_hat_fc(conditions)
+            z_logits_condition = self.to_z_logits_fc(conditions).view(
+                -1,
+                self.diff_config['gsemb_latent_dim'],
+                self.diff_config['gsemb_num_embeddings'],
+            )
+            result_condition = {
+                'text_hat': text_hat_condition,
+                'z_logits': z_logits_condition,
+            }
+        else:
+            result_condition = conditions
+
+        # The decoder predicts three auxiliary bbox dispersion values at
+        # indices 3:6. The released model uses the deterministic bbox-size
+        # prediction at 0:3 and drops those auxiliary values.
+        bbox_size = raw_articulated_info[:, 0:3]
+        articulated_info = torch.cat((bbox_size, raw_articulated_info[:, 6:]), dim=-1)
+
+        return {
+            'is_end_token_logits': end_token_logits,
+            'articulated_info': articulated_info,
+            'condition': result_condition,
+        }
+
     def forward(self, input, padding_mask, enc_data):
         # ('token'/'dfn'/'dfn_fa') * batch * part_idx * attribute_dim
         enc_data = self.postencoder(enc_data)
@@ -125,41 +164,14 @@ class TransformerDecoder(nn.Module):
             vggt_reg_loss = vggt_reg_loss + layer_vggt_reg
             cross_attn_weight_list.append(cross_attn_weight.detach().cpu().numpy())
 
-        # skip padding mask.
-        tokens = tokens[padding_mask > 0.5]
-
-        end_token_logits = self.end_token_logits(tokens).squeeze(-1)
-
-        tokens = self.untokenizer(tokens)
-
-        conditions = tokens[:, -self.dim_condition:]
-        raw_articulated_info = tokens[:, :-self.dim_condition]
-
-        if self.use_shape_prior:
-            text_hat_condition = self.to_text_hat_fc(conditions)
-            z_logits_condition = self.to_z_logits_fc(conditions).view(-1, self.diff_config['gsemb_latent_dim'],
-                                                                self.diff_config['gsemb_num_embeddings'])
-            result_condition = { # Generate latentcode base on 'result_condition'.
-                'text_hat': text_hat_condition,
-                'z_logits': z_logits_condition
-            }
-        else:
-            result_condition = conditions #  latentcode IS 'result_condition' it self.
-
-        # process length of xyz of bounding box
-        _b_mu = raw_articulated_info[:, 0:3]
-        _b_logvar = raw_articulated_info[:, 3:6]
-        # Sample base on predicted `mean` and `var`.
-        # _b_std = torch.exp(0.5 * _b_logvar)
-        # eps = torch.randn_like(_b_std)
-        _b_length_xyz = _b_mu #  + eps * _b_std
-        # Do Not try to sample from code.
-        articulated_info = torch.cat((_b_length_xyz, raw_articulated_info[:, 6:]), dim=-1)
+        # Skip padding tokens and retain the representation for optional
+        # inference-time validity-vector intervention.
+        hidden_tokens = tokens[padding_mask > 0.5]
+        decoded = self.decode_hidden(hidden_tokens)
 
         result = {
-            'is_end_token_logits': end_token_logits,
-            'articulated_info': articulated_info,
-            'condition': result_condition,
+            **decoded,
+            'hidden_tokens': hidden_tokens,
             'cross_attn_weight_list': cross_attn_weight_list,
             'vggt_reg_loss': vggt_reg_loss / max(1, len(self.layers)),
         }

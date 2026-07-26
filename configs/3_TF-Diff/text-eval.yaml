@@ -4,6 +4,14 @@ OPTION: 1
 
 eval_output_path: log/ours/
 
+generation:
+  experiment_name: decoart_full
+  output_root: elog/final_output
+  category_keyword: Table
+  num_objects: 100
+  selection_seed: 31
+  repetitions: 5
+
 t5_max_sentence_length: 512
 
 evaluation:
@@ -17,6 +25,54 @@ gensdf_latentcode_evaluator:
 number_of_trial: 20
 save_output_dat: true
 
+# DecoArt Eq. (11)--(13): structured-state evaluation, routing, and
+# token-representation intervention. The coefficients are fixed and introduce
+# no trainable parameters.
+structured_state_guidance:
+  enabled: true
+  eta: 0.05
+  steps: 2
+  max_backtracks: 5
+  min_eta: 1.0e-4
+  seed: 2026
+
+  # [omega_str, omega_phy, omega_det] = [0.50, 1.00, 0.25]
+  group_weights:
+    structure: 0.50
+    physical: 1.00
+    detail: 0.25
+  routing_mode: correct       # correct | random | uniform
+  uniform_weight: 1.00
+
+  # Physical Evaluation Branch.
+  samples_per_face: 9
+  dmax: 0.10
+  alpha_normal: 0.50
+  beta_penetration: 1.00
+  tau_pen: 0.02
+  base_clearance: 0.00
+  limit_clearance_scale: 0.02
+  neighbor_margin: 0.03
+  face_temperature: 0.10
+  theta_tan: 0.10
+  theta_norm: 0.25
+  theta_pen: 0.02
+
+  # Representation Routing Branch.
+  lambda_depth: 0.55
+  lambda_subtree: 0.45
+  lambda_delta: 0.55
+  lambda_omega: 0.45
+  tau_structure: 0.50
+  tau_physical: 0.35
+
+  # Rebuttal controls. Keep all at zero for the full model.
+  state_noise_std: 0.00
+  routing_corruption_ratio: 0.00
+  support_corruption_ratio: 0.00
+
+# Optional geometry-latent guidance retained from the earlier implementation.
+# This is separate from the structured-state intervention above.
 physics_guidance_inference:
   enabled: false
   weight_gamma: 0.1

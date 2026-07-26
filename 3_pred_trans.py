@@ -8,12 +8,9 @@ from rich import print
 from tqdm import tqdm
 
 import multiprocessing
-import numpy as np
 import time
 import random
-import shutil
-import torch
-import os
+import hashlib
 
 if __name__ == '__main__':
     config = parse_config_from_args()
@@ -51,9 +48,13 @@ if __name__ == '__main__':
 
         # print(f"Found {len(obj_name_list)} text files in {target_folder_name}")
 
-        target_category_keyword = "Table"
-        num_objects = 100  
-        fixed_experiment_seed = 31
+        generation_cfg = config.get('generation', {})
+        target_category_keyword = generation_cfg.get('category_keyword', "Table")
+        num_objects = int(generation_cfg.get('num_objects', 100))
+        fixed_experiment_seed = int(generation_cfg.get('selection_seed', 31))
+        repetitions = int(generation_cfg.get('repetitions', 3))
+        experiment_name = generation_cfg.get('experiment_name', 'decoart_full')
+        output_root = Path(generation_cfg.get('output_root', 'elog/final_output'))
 
         candidate_dirs = []
         for d in text_datasets.iterdir():
@@ -76,12 +77,15 @@ if __name__ == '__main__':
                 obj_name_list.append(formatted_name)
 
         for obj_name in tqdm(obj_name_list, 'obj_list'):
-            output_path = Path('elog') / f"final_output" / f"ours_Table" / f"{obj_name}"
+            output_path = output_root / experiment_name / obj_name
             obj_infos = obj_name.split('_')
             text_content = (text_datasets / '_'.join(obj_infos[:2]) / (str(obj_infos[2])+'.txt')).read_text()
             print("Processing", obj_name)
 
-            for rep in range(3):
+            for rep in range(repetitions):
+                seed_material = f"{fixed_experiment_seed}:{obj_name}:{rep}".encode("utf-8")
+                sample_seed = int.from_bytes(hashlib.sha256(seed_material).digest()[:4], "little")
+                seed_everything(sample_seed, workers=True)
                 evaluator.inference_to_output_path(text_content, output_path / str(rep), blender_generated_gif=True)
     else:
         print('NOT SUPPORT ANYMORE.')
