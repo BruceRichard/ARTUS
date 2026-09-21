@@ -78,16 +78,19 @@ class TransDiffusionDataset(dataset.Dataset):
         assert len(data['exist_node']) == len(data['inferenced_token'])
 
         # Process Input
+        # [ARTUS]: the input token of each visible part carries its structural
+        # state (16) and its geometry latent (768); the geometry latent feeds
+        # the geometry encoder E_v of the structure-gated fusion (Sec. 3.2).
         input = data['exist_node']
         # with open('input.json', 'w') as f:
         #     json.dump(input, f, indent=4)
 
         for node_idx, node in enumerate(input):
             raw_data_info = node['token'][:16]
-            assert len(node['token'][16:]) == 768
-            text_hat = node['packed_info']['text_hat']
+            latent_code = node['token'][16:]
+            assert len(latent_code) == 768
 
-            node['token'] = torch.tensor(raw_data_info + text_hat, dtype=torch.float32)
+            node['token'] = torch.tensor(raw_data_info + latent_code, dtype=torch.float32)
             dfn_fa = node['dfn_fa']
             for idx in range(len(input)):
                 if input[idx]['dfn'] == dfn_fa:
@@ -101,7 +104,7 @@ class TransDiffusionDataset(dataset.Dataset):
             if node.get('dfn_fa') is not None: del node['dfn_fa']
 
         for _ in range(self.max_count_token - len(input)):
-            input.append({'token': copy.deepcopy(self.pad_token[:80]), 'fa': 0})
+            input.append({'token': copy.deepcopy(self.pad_token), 'fa': 0})
 
         transformed_input = {
                 'token': torch.stack([node['token'] for node in input]),
@@ -152,3 +155,60 @@ class TransDiffusionDataset(dataset.Dataset):
         return [transformed_input, transformed_output, padding_mask, output_skip_end_token_mask] +   \
                     ([enc['encoded_text'], enc['text']] if self.enc_data_fieldname == 'description'
                 else [enc.astype(np.float32), str(enc_path)])
+
+    @torch.no_grad()
+    def compute_channel_stats(self, cache_path=None):
+        """Channel-wise mean/std of the structural state (16) and geometry
+        latent (768) over the optimization set.
+
+        Terminal and padding positions are excluded, matching the valid-target
+        masks of the joint-latent objective (paper Appendix C.2). The standard
+        deviation is bounded below by 1e-6. Statistics are cached to
+        `cache_path` (npz) so the optimization set is scanned only once.
+        """
+        if cache_path is not None and Path(cache_path).exists():
+            stats = np.load(cache_path)
+            return {key: torch.tensor(stats[key], dtype=torch.float32)
+                    for key in stats.files}
+
+        dim_state, dim_latent = 16, 768
+        state_sum = torch.zeros(dim_state, dtype=torch.float64)
+        state_sq = torch.zeros(dim_state, dtype=torch.float64)
+        latent_sum = torch.zeros(dim_latent, dtype=torch.float64)
+        latent_sq = torch.zeros(dim_latent, dtype=torch.float64)
+        count = 0
+
+        for i in trange(len(self), desc="computing channel stats"):
+            item = self.__getitem__(i)
+            output, padding_mask, end_mask = item[1], item[2], item[3]
+            valid = (padding_mask > 0.5) & (end_mask > 0.5)
+            tokens = output['token'][valid].to(torch.float64)
+            if tokens.shape[0] == 0:
+                continue
+            state_sum += tokens[:, :dim_state].sum(dim=0)
+            state_sq += tokens[:, :dim_state].pow(2).sum(dim=0)
+            latent_sum += tokens[:, dim_state:].sum(dim=0)
+            latent_sq += tokens[:, dim_state:].pow(2).sum(dim=0)
+            count += tokens.shape[0]
+
+        assert count > 0, "no valid target tokens found in the dataset"
+        state_mean = state_sum / count
+        state_std = (state_sq / count - state_mean.pow(2)).clamp(min=0).sqrt()
+        latent_mean = latent_sum / count
+        latent_std = (latent_sq / count - latent_mean.pow(2)).clamp(min=0).sqrt()
+        state_std = state_std.clamp(min=1e-6)
+        latent_std = latent_std.clamp(min=1e-6)
+
+        stats = {
+            'state_mean': state_mean.to(torch.float32),
+            'state_std': state_std.to(torch.float32),
+            'latent_mean': latent_mean.to(torch.float32),
+            'latent_std': latent_std.to(torch.float32),
+        }
+
+        if cache_path is not None:
+            cache_path = Path(cache_path)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(cache_path, **{k: v.numpy() for k, v in stats.items()})
+
+        return stats

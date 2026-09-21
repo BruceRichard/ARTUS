@@ -34,8 +34,14 @@ part_structure:
   latentcode: 768
 
 transformer_model_paramerter:
-  tree_position_embedding: true
-  shape_prior: true
+  # [ARTUS] Structure-gated latent fusion (paper Sec. 3.2). The ablation
+  # values correspond to the latent-construction controls of paper Table 2(a).
+  gated_fusion:
+    path_mode: full        # full | local | none
+    gate_source: structure # structure | geometry | joint | constant | zero
+    fusion_mode: gated     # gated | direct | direct_norm | early
+    path_hidden_dim: 512   # BiGRU hidden units per direction
+
   tokenizer_hidden_dim: 4096
   tokenizer_dropout: 0.1
 
@@ -44,69 +50,40 @@ transformer_model_paramerter:
   d_model: 1024
   decoder_dropout: 0.1
 
-  position_embedding_dropout: 0.1
-  position_embedding_dim_single_emb: 64
-
   ffn_hidden_dim: 4096
   ffn_dropout: 0.1
-
-  # channel, weight, height
-  # vq_expand_dim: [32, 4, 4]
-  # n_embed: 256
-  # vq_beta: 0.25
-  # vq_loss_weight: 0.1
-  # before_vq_net_deepth: 4
 
   encoder_kv_dim: 1024 # decided by pretrained encoder model.
   post_encoder_deepth: 4
   post_encoder_dropout: 0.2
 
-  # FastVGGT-inspired quality enhancement.
-  vggt_enhance:
-    enabled: true
-    salient_ratio: 0.35
-    refresh_alpha: 0.35
-    collapse_margin: 0.80
-
-  # condition_post_process_hidden_dim: 768
-  # condition_post_process_deepth: 2
-
 diffusion_model:
   pretrained_model_path: null
-  # z_hat_dropout: 0.2
 
+# [ARTUS] Structure-controlled joint-latent objective (paper Eq. 8-10):
+#   L = L_end + alpha * L_state + beta * L_geo + lambda * L_scl
+# AdamW, lr 1e-4, weight decay 0.01, 5000 warmup steps + cosine decay,
+# 100000 optimizer steps (paper Appendix C.1).
 optimizer_paramerter:
-  tf_lr: 1
-  scheduler_factor: 0.0015
-  scheduler_warmup: 30
-  betas: [0.9, 0.98]
-  eps: 1.0e-9
-
-  diff_lr: 1.0e-6
+  lr: 1.0e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+  warmup_steps: 5000
+  max_steps: 100000
 
   loss_ratio:
     et_loss: 1
-    tf_loss: 10
-    th_loss: 5
-    zl_loss: 2
-    lt_loss: 0
-    pg_loss: 0
-    vggt_reg_loss: 0.5
-    # vq_loss: 1
-    # df_loss: 2
+    state_loss: 1    # alpha
+    geo_loss: 0.5    # beta
+    scl_loss: 0.1    # lambda
 
-physics_guided_cost:
-  dmax: 0.10
-  min_bbox_size: 1.0e-3
-  contact_weight: 1.0
-  penetration_weight: 2.0
-  axis_weight: 0.2
-  limit_weight: 0.2
-  origin_weight: 0.1
-
-physics_guidance:
-  training_enabled: false
-
+# [ARTUS] Channel normalization of regression targets with optimization-set
+# statistics, std bounded below by 1e-6 (paper Appendix C.2). The statistics
+# are computed once by 3_train_trans.py and cached at stats_path.
+normalization:
+  enabled: true
+  stats_path: data/datasets/4_transformer_dataset/norm_stats.npz
 
 evaluation:
   sdf_model_path: train_root_dir/SDF/checkpoint/04-14-06PM-40-00/sdf_epoch=8499-loss=0.00209.ckpt

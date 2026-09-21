@@ -58,6 +58,12 @@ if __name__ == '__main__':
     # config['evaluation']['sdf_model_path'] = train_dataloader.dataset.get_best_sdf_ckpt_path()
     config['diffusion_model']['pretrained_model_path'] = train_dataloader.dataset.get_best_diffusion_ckpt_path()
 
+    # [ARTUS] Channel normalization statistics of the optimization set
+    # (paper Appendix C.2); computed once and cached next to the dataset.
+    if config.get('normalization', {}).get('enabled', False):
+        train_dataloader.dataset.compute_channel_stats(
+            cache_path=config['normalization'].get('stats_path'))
+
     # Configure model
     if config['base_on_model'] is not None:
         Log.info('Using pretrained model: %s', config['base_on_model'])

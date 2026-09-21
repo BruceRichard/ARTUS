@@ -5,7 +5,7 @@ OPTION: 1
 eval_output_path: log/ours/
 
 generation:
-  experiment_name: artus_full
+  experiment_name: artus_no_refinement
   output_root: elog/final_output
   category_keyword: Table
   num_objects: 100
@@ -18,7 +18,7 @@ t5_max_sentence_length: 512
 # frozen text-conditioned prior, and feedback into the Existing Articulation
 # Pathway (paper Sec. 3.3, Eq. 5-7).
 latent_refinement:
-  enabled: true        # false -> "coarse code, no refinement" control (Table 2b)
+  enabled: false       # false -> "coarse code, no refinement" control (Table 2b)
   rho_star: 250        # refinement depth: noise index in the 1000-step schedule; 0 bypasses refinement
   sampler_steps: 50    # retained reverse steps of the frozen prior
   feedback: true       # false -> "structure rectifier, no feedback" control (Table 2b)

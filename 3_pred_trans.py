@@ -53,7 +53,7 @@ if __name__ == '__main__':
         num_objects = int(generation_cfg.get('num_objects', 100))
         fixed_experiment_seed = int(generation_cfg.get('selection_seed', 31))
         repetitions = int(generation_cfg.get('repetitions', 3))
-        experiment_name = generation_cfg.get('experiment_name', 'decoart_full')
+        experiment_name = generation_cfg.get('experiment_name', 'artus_full')
         output_root = Path(generation_cfg.get('output_root', 'elog/final_output'))
 
         candidate_dirs = []

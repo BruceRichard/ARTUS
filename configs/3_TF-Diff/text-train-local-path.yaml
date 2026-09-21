@@ -1,25 +1,28 @@
+#base_on_model: train_root_dir/Transformer_Diffusion/checkpoint/12-25-11AM-37-11/epoch=1936-loss=0.05536.ckpt
 base_on_model: null
 
 seed: 1234567890
 wandb:
-  use: true
+  use: false
   project: TF_Diffusion
-  entity: <skip>
+  entity: 1785115532-harbin-institute-of-technology
 
 default_root_dir: train_root_dir/Transformer_Diffusion
-num_epochs: 1000001
+# 1000001
+num_epochs: 10001
 
 dataset_n_dataloader:
-  n_workers: 16
-  batch_size: 128
+  n_workers: 4
+  batch_size: 48
 
   dataset_path: data/datasets/4_transformer_dataset
   cut_off: -1
-  enc_data_fieldname: images
+  enc_data_fieldname: description
 
 checkpoint:
   path: train_root_dir/Transformer_Diffusion/checkpoint
-  freq: 10000
+  #10000
+  freq: 100
 
 part_structure:
   bounding_box: 6 # 3 + (3 + 3) # center + length of x, y, z (mean, logvar)
@@ -31,9 +34,10 @@ part_structure:
   latentcode: 768
 
 transformer_model_paramerter:
-  # [ARTUS] Structure-gated latent fusion (paper Sec. 3.2).
+  # [ARTUS] Structure-gated latent fusion (paper Sec. 3.2). The ablation
+  # values correspond to the latent-construction controls of paper Table 2(a).
   gated_fusion:
-    path_mode: full        # full | local | none
+    path_mode: local       # full | local | none
     gate_source: structure # structure | geometry | joint | constant | zero
     fusion_mode: gated     # gated | direct | direct_norm | early
     path_hidden_dim: 512   # BiGRU hidden units per direction
@@ -49,14 +53,17 @@ transformer_model_paramerter:
   ffn_hidden_dim: 4096
   ffn_dropout: 0.1
 
-  encoder_kv_dim: 1408 # decided by pretrained encoder model.
+  encoder_kv_dim: 1024 # decided by pretrained encoder model.
   post_encoder_deepth: 4
   post_encoder_dropout: 0.2
 
 diffusion_model:
   pretrained_model_path: null
 
-# [ARTUS] Structure-controlled joint-latent objective (paper Eq. 8-10).
+# [ARTUS] Structure-controlled joint-latent objective (paper Eq. 8-10):
+#   L = L_end + alpha * L_state + beta * L_geo + lambda * L_scl
+# AdamW, lr 1e-4, weight decay 0.01, 5000 warmup steps + cosine decay,
+# 100000 optimizer steps (paper Appendix C.1).
 optimizer_paramerter:
   lr: 1.0e-4
   weight_decay: 0.01
@@ -71,16 +78,18 @@ optimizer_paramerter:
     geo_loss: 0.5    # beta
     scl_loss: 0.1    # lambda
 
-# [ARTUS] Channel normalization with optimization-set statistics.
+# [ARTUS] Channel normalization of regression targets with optimization-set
+# statistics, std bounded below by 1e-6 (paper Appendix C.2). The statistics
+# are computed once by 3_train_trans.py and cached at stats_path.
 normalization:
   enabled: true
   stats_path: data/datasets/4_transformer_dataset/norm_stats.npz
 
 evaluation:
-  sdf_model_path: null
+  sdf_model_path: train_root_dir/SDF/checkpoint/04-14-06PM-40-00/sdf_epoch=8499-loss=0.00209.ckpt
   max_batch: 131072  # 2^17
   z_batch: 256
   eval_mesh_output_path: train_root_dir/SDF/tempmesh
   resolution: 256
-  count: 5
+  count: 20
   freq: 2000

@@ -1,4 +1,8 @@
 # [ArtFormer]: This code is adapted from Diffusion-SDF `https://github.com/princeton-computational-imaging/Diffusion-SDF`
+# [ARTUS]: adds `refine`, the partial-noise refinement of a coarse geometry
+# latent with the frozen text-conditioned prior (paper Eq. 5-7): the coarse
+# prediction is perturbed to an intermediate diffusion step rho* and denoised
+# back to 0, instead of restarting generation from pure Gaussian noise.
 
 import torch
 import torch.nn.functional as F
@@ -41,9 +45,6 @@ class _DiffusionModel(nn.Module):
         assert self.sampling_timesteps <= timesteps
         self.ddim_sampling_eta = ddim_sampling_eta
 
-        # self.register_buffer('data_scale', torch.tensor(data_scale))
-        # self.register_buffer('data_shift', torch.tensor(data_shift))
-
         # helper function to register buffer from float64 to float32
         register_buffer = lambda name, val: self.register_buffer(name, val.to(torch.float32))
 
@@ -70,34 +71,6 @@ class _DiffusionModel(nn.Module):
 
         # calculate p2 reweighting
         register_buffer('p2_loss_weight', (p2_loss_weight_k + alphas_cumprod / (1 - alphas_cumprod)) ** -p2_loss_weight_gamma)
-        self.last_guidance_log = []
-
-    @staticmethod
-    def _should_apply_guidance(t, guidance_enabled, guidance_fn, guidance_interval):
-        if not guidance_enabled or guidance_fn is None:
-            return False
-        guidance_interval = max(1, int(guidance_interval))
-        return (int(t) % guidance_interval) == 0
-
-    def _compute_guidance_grad(self, x_t, t, cond, guidance_fn, guidance_ctx):
-        x_in = x_t.detach().requires_grad_(True)
-        with torch.enable_grad():
-            j_val = guidance_fn(x_in, t=t, cond=cond, guidance_ctx=guidance_ctx)
-            if not torch.is_tensor(j_val):
-                j_val = torch.tensor(float(j_val), device=x_in.device, dtype=x_in.dtype)
-            if j_val.ndim > 0:
-                j_val = j_val.mean()
-            grad = torch.autograd.grad(j_val, x_in, retain_graph=False, create_graph=False, allow_unused=False)[0]
-        return grad.detach(), j_val.detach()
-
-    def _compute_guidance_cost_no_grad(self, x_t, t, cond, guidance_fn, guidance_ctx):
-        with torch.no_grad():
-            j_val = guidance_fn(x_t, t=t, cond=cond, guidance_ctx=guidance_ctx)
-            if not torch.is_tensor(j_val):
-                j_val = torch.tensor(float(j_val), device=x_t.device, dtype=x_t.dtype)
-            if j_val.ndim > 0:
-                j_val = j_val.mean()
-        return j_val.detach()
 
     def predict_start_from_noise(self, x_t, t, noise):
         return (
@@ -119,12 +92,6 @@ class _DiffusionModel(nn.Module):
         clip_denoised=True,
         traj=False,
         cond=None,
-        guidance_fn=None,
-        guidance_ctx=None,
-        guidance_weight=0.0,
-        guidance_interval=1,
-        guidance_enabled=False,
-        guidance_log=False,
     ):
         batch, device, total_timesteps, sampling_timesteps, eta, objective = batch_size, self.betas.device, self.num_timesteps, self.sampling_timesteps, self.ddim_sampling_eta, self.objective
         times = torch.linspace(0., total_timesteps, steps = sampling_timesteps + 2)[:-1]
@@ -132,7 +99,6 @@ class _DiffusionModel(nn.Module):
         time_pairs = list(zip(times[:-1], times[1:]))
 
         traj_buffer = []
-        self.last_guidance_log = []
 
         x_T = default(noise, torch.randn(batch, dim, device = device))
 
@@ -155,17 +121,6 @@ class _DiffusionModel(nn.Module):
             noise = torch.randn_like(x_T) if time_next > 0 else 0.
             x_next = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
 
-            if self._should_apply_guidance(time, guidance_enabled, guidance_fn, guidance_interval):
-                grad_j, j_before = self._compute_guidance_grad(x_T, time_cond, cond, guidance_fn, guidance_ctx)
-                x_next = x_next - float(guidance_weight) * grad_j
-                if guidance_log:
-                    j_after = self._compute_guidance_cost_no_grad(x_next, time_cond, cond, guidance_fn, guidance_ctx)
-                    self.last_guidance_log.append({
-                        't': int(time),
-                        'j_before': float(j_before.item()),
-                        'j_after': float(j_after.item()),
-                    })
-
             x_T = x_next
             traj_buffer.append(x_T.clone())
 
@@ -179,18 +134,11 @@ class _DiffusionModel(nn.Module):
         clip_denoised=True,
         traj=False,
         cond=None,
-        guidance_fn=None,
-        guidance_ctx=None,
-        guidance_weight=0.0,
-        guidance_interval=1,
-        guidance_enabled=False,
-        guidance_log=False,
     ):
 
         batch, device, objective = batch_size, self.betas.device, self.objective
 
         traj_buffer = []
-        self.last_guidance_log = []
 
         x_T = default(noise, torch.randn(batch, dim, device = device))
 
@@ -209,21 +157,85 @@ class _DiffusionModel(nn.Module):
             noise = torch.randn_like(x_T) if t > 0 else 0. # no noise if t == 0
             x_next = model_mean + (0.5 * model_log_variance).exp() * noise
 
-            if self._should_apply_guidance(t, guidance_enabled, guidance_fn, guidance_interval):
-                grad_j, j_before = self._compute_guidance_grad(x_T, time_cond, cond, guidance_fn, guidance_ctx)
-                x_next = x_next - float(guidance_weight) * grad_j
-                if guidance_log:
-                    j_after = self._compute_guidance_cost_no_grad(x_next, time_cond, cond, guidance_fn, guidance_ctx)
-                    self.last_guidance_log.append({
-                        't': int(t),
-                        'j_before': float(j_before.item()),
-                        'j_after': float(j_after.item()),
-                    })
-
             x_T = x_next
             traj_buffer.append(x_T.clone())
 
         return x_T, (traj_buffer if traj else None)
+
+    @torch.no_grad()
+    def refine(
+        self,
+        coarse_latent,
+        start_step,
+        cond=None,
+        sampler_steps=None,
+        clip_denoised=True,
+    ):
+        """[ARTUS] Partial-noise refinement of a coarse geometry latent.
+
+        The coarse prediction is perturbed to the intermediate diffusion step
+        `start_step` (rho*),
+
+            z_rho* = sqrt(alpha_bar_rho*) * v_coarse
+                     + sqrt(1 - alpha_bar_rho*) * eps,
+
+        and the frozen prior then runs the text-conditioned reverse process
+        back to 0 (paper Eq. 5-7). `start_step == 0` bypasses refinement.
+
+        Args:
+            coarse_latent: (B, dim) coarse geometry latent from D_v.
+            start_step:    noise index rho* in the training schedule.
+            cond:          text condition of the frozen refiner.
+            sampler_steps: retained reverse steps; if None or >= start_step,
+                           the full ancestral (DDPM) reverse over
+                           [0, start_step] is used, otherwise a DDIM schedule.
+        """
+        device = self.betas.device
+        x = coarse_latent.to(device)
+        start_step = int(min(max(int(start_step), 0), self.num_timesteps - 1))
+        if start_step <= 0:
+            return x
+
+        batch = x.shape[0]
+        t_start = torch.full((batch,), start_step, device=device, dtype=torch.long)
+        x = self.q_sample(x, t_start)
+
+        if sampler_steps is None or int(sampler_steps) >= start_step:
+            for t in tqdm(reversed(range(0, start_step + 1)), desc='refinement loop', total=start_step + 1):
+                time_cond = torch.full((batch,), t, device=device, dtype=torch.long)
+                model_input = (x, cond) if cond is not None else x
+                pred_noise, x_start, *_ = self.model_predictions(model_input, time_cond)
+                if clip_denoised:
+                    x_start.clamp_(-1., 1.)
+                model_mean, _, model_log_variance = self.q_posterior(x_start=x_start, x_t=x, t=time_cond)
+                noise = torch.randn_like(x) if t > 0 else 0.
+                x = model_mean + (0.5 * model_log_variance).exp() * noise
+            return x
+
+        times = torch.linspace(0., start_step, steps=int(sampler_steps) + 2)[:-1]
+        times = sorted(set(times.int().tolist()))
+        times = list(reversed(times))
+        time_pairs = list(zip(times[:-1], times[1:]))
+
+        eta = self.ddim_sampling_eta
+        for time, time_next in tqdm(time_pairs, desc='refinement loop'):
+            alpha = self.alphas_cumprod_prev[time]
+            alpha_next = self.alphas_cumprod_prev[time_next]
+
+            time_cond = torch.full((batch,), time, device=device, dtype=torch.long)
+
+            model_input = (x, cond) if cond is not None else x
+            pred_noise, x_start, *_ = self.model_predictions(model_input, time_cond)
+            if clip_denoised:
+                x_start.clamp_(-1., 1.)
+
+            sigma = eta * ((1 - alpha / alpha_next) * (1 - alpha_next) / (1 - alpha)).sqrt()
+            c = ((1 - alpha_next) - sigma ** 2).sqrt()
+
+            noise = torch.randn_like(x) if time_next > 0 else 0.
+            x = x_start * alpha_next.sqrt() + c * pred_noise + sigma * noise
+
+        return x
 
     def q_posterior(self, x_start, x_t, t):
         posterior_mean = (
@@ -231,8 +243,8 @@ class _DiffusionModel(nn.Module):
             extract(self.posterior_mean_coef2, t, x_t.shape) * x_t
         )
         posterior_variance = extract(self.posterior_variance, t, x_t.shape)
-        posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, x_t.shape)
-        return posterior_mean, posterior_variance, posterior_log_variance_clipped
+        posterior_log_variance = extract(self.posterior_log_variance_clipped, t, x_t.shape)
+        return posterior_mean, posterior_variance, posterior_log_variance
 
 
     # "nice property": return x_t given x_0, noise, and timestep
@@ -280,9 +292,6 @@ class _DiffusionModel(nn.Module):
 
     def model_predictions(self, model_input, t):
 
-        #model_output1 = self.model(model_input, t, pass_cond=0)
-        #model_output2 = self.model(model_input, t, pass_cond=1)
-        #model_output = model_output2*5 - model_output1*4
         model_output = self.model(model_input, t)
 
         x = model_input[0] if type(model_input) is tuple else model_input
@@ -300,9 +309,6 @@ class _DiffusionModel(nn.Module):
     # a wrapper function that only takes x_start (clean modulation vector) and condition
     # does everything including sampling timestep and returns loss, loss_100, loss_1000, prediction
     def diffusion_model_from_latent(self, x_start, cond=None):
-        #if self.perturb_pc is None and cond is not None:
-        #    print("check whether to pass condition!!!")
-
         # STEP 1: sample timestep
         t = torch.randint(0, self.num_timesteps, (x_start.shape[0],), device=x_start.device).long()
 
@@ -313,54 +319,24 @@ class _DiffusionModel(nn.Module):
 
         return loss, loss_100, loss_1000, model_out, cond
 
-    def generate_conditional(
-        self,
-        cond,
-        guidance_fn=None,
-        guidance_ctx=None,
-        guidance_weight=0.0,
-        guidance_interval=1,
-        guidance_enabled=False,
-        guidance_log=False,
-    ):
+    def generate_conditional(self, cond):
         self.eval()
         samp, _ = self.sample(
             dim=self.model.dim,
             batch_size=cond['text'].shape[0],
             traj=False,
             cond=cond,
-            guidance_fn=guidance_fn,
-            guidance_ctx=guidance_ctx,
-            guidance_weight=guidance_weight,
-            guidance_interval=guidance_interval,
-            guidance_enabled=guidance_enabled,
-            guidance_log=guidance_log,
         )
 
         return samp
 
-    def generate_conditional_ddim(
-        self,
-        cond,
-        guidance_fn=None,
-        guidance_ctx=None,
-        guidance_weight=0.0,
-        guidance_interval=1,
-        guidance_enabled=False,
-        guidance_log=False,
-    ):
+    def generate_conditional_ddim(self, cond):
         self.eval()
         samp, _ = self.ddim_sample(
             dim=self.model.dim,
             batch_size=cond['text'].shape[0],
             traj=False,
             cond=cond,
-            guidance_fn=guidance_fn,
-            guidance_ctx=guidance_ctx,
-            guidance_weight=guidance_weight,
-            guidance_interval=guidance_interval,
-            guidance_enabled=guidance_enabled,
-            guidance_log=guidance_log,
         )
 
         return samp

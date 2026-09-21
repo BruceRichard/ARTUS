@@ -5,7 +5,7 @@ OPTION: 1
 eval_output_path: log/ours/
 
 generation:
-  experiment_name: artus_full
+  experiment_name: artus_no_feedback
   output_root: elog/final_output
   category_keyword: Table
   num_objects: 100
@@ -21,7 +21,7 @@ latent_refinement:
   enabled: true        # false -> "coarse code, no refinement" control (Table 2b)
   rho_star: 250        # refinement depth: noise index in the 1000-step schedule; 0 bypasses refinement
   sampler_steps: 50    # retained reverse steps of the frozen prior
-  feedback: true       # false -> "structure rectifier, no feedback" control (Table 2b)
+  feedback: false      # false -> "structure rectifier, no feedback" control (Table 2b)
 
 # Generation caps (paper Algorithm 1). Defaults derive from the dataset:
 # max_generation_rounds = max_count_token + 1, max_nodes = max_count_token.

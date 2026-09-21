@@ -3,13 +3,13 @@ from torch import nn
 
 from .layers.decoder_layer import DecoderLayer
 from .layers.post_encoder import PostEncoder
-from .layers.token import MLPTokenizer, MLPUnTokenizer
-from .layers.position import PositionGRUEmbedding
-# from .layers.vq_embedding import VQEmbedding
+from .layers.token import MLPUnTokenizer
+from .layers.gated_fusion import StructureGatedFusion
 
-from utils.mylogging import Log
-
-# main part of Articulation Transformer.
+# [ARTUS]: Joint-latent context model F_theta with structure-gated latent
+# fusion (Sec. 3.2) and factor-specific prediction heads D_gamma / D_s / D_v
+# (Sec. 3.3). Each visible part contributes one joint latent token built from
+# its structural state (16) and its geometry latent (768).
 
 class TransformerDecoder(nn.Module):
     def __init__(self, config):
@@ -20,74 +20,45 @@ class TransformerDecoder(nn.Module):
         self.part_structure = self.config['part_structure']
         self.m_config = self.config['transformer_model_paramerter']
         self.d_model = self.m_config['d_model']
-        # self.vq_dim = self.m_config['vq_expand_dim']
 
-        self.diff_config = self.config['diff_config']
-
-        self.to_z_logits_fc = nn.Linear(self.part_structure['condition'], self.diff_config['gsemb_num_embeddings'] * self.diff_config['gsemb_latent_dim'])
-        self.to_text_hat_fc = nn.Linear(self.part_structure['condition'], self.diff_config['diffusion_model_config']['text_hat_dim'])
-
-        d_token_input = sum(
-            [v for k, v in self.part_structure.items() if k != 'condition' and k != 'latentcode']
-        ) + 64 # 64 for text_hat.
-
-        d_token_condition = sum(
-            [v for k, v in self.part_structure.items() if k != 'latentcode']
-        )
-
-        d_token_condition_with_bbx_dis = d_token_condition + 3
-
+        self.dim_state = (self.part_structure['bounding_box']
+                          + self.part_structure['joint_data_origin']
+                          + self.part_structure['joint_data_direction']
+                          + self.part_structure['limit'])
         self.dim_latent = self.part_structure['latentcode']
-        self.dim_condition = self.part_structure['condition']
 
-        if self.m_config.get('tree_position_embedding', True):
-            self.position_embedding = PositionGRUEmbedding(d_model=self.d_model,
-                                                        dim_single_emb=self.m_config['position_embedding_dim_single_emb'],
-                                                        dropout=self.m_config['position_embedding_dropout'])
-        else:
-            # For ablation study.
-            Log.critical("Didn't Use PositionGRUEmbedding")
-            import time
-            time.sleep(3)
-            self.position_embedding = None
-
-        self.use_shape_prior = self.m_config.get('shape_prior', True)
-        if not self.use_shape_prior:
-            Log.critical("Didn't Use use_shape_prior")
-            import time
-            time.sleep(3)
-
-
-        # self.expand_latent_dim = reduce(lambda x, y: x * y, self.m_config['vq_expand_dim'])
-
-        # self.latentcode_encoder = nn.Sequential(*[
-        #     ResnetBlockFC(self.expand_latent_dim, 0.1)
-        #     for _ in range(self.m_config['before_vq_net_deepth'])
-        # ])
-
-        # self.latentcode_expand_fc = nn.Linear(self.dim_latent,  self.expand_latent_dim)
-        # self.vq_embedding   = VQEmbedding(self.m_config['n_embed'], self.m_config['vq_expand_dim'][0], beta=self.m_config['vq_beta'])
-        # self.latentcode_to_condition = nn.Linear(self.expand_latent_dim, self.dim_condition)
-
-        self.tokenizer      = MLPTokenizer(d_token=d_token_input,
-                                           d_hidden=self.m_config['tokenizer_hidden_dim'],
-                                           d_model=self.d_model,
-                                           drop_out=self.m_config['tokenizer_dropout'])
-
-        self.untokenizer    = MLPUnTokenizer(d_token_condition_with_bbx_dis,
-                                             d_hidden=self.m_config['tokenizer_hidden_dim'],
-                                             d_model=self.d_model,
-                                             drop_out=self.m_config['tokenizer_dropout'])
+        fusion_config = self.m_config.get('gated_fusion', {})
+        self.fusion = StructureGatedFusion(
+            d_structure=self.dim_state,
+            d_geometry=self.dim_latent,
+            d_hidden=self.m_config['tokenizer_hidden_dim'],
+            d_model=self.d_model,
+            dropout=self.m_config['tokenizer_dropout'],
+            path_hidden=fusion_config.get('path_hidden_dim', 512),
+            path_mode=fusion_config.get('path_mode', 'full'),
+            gate_source=fusion_config.get('gate_source', 'structure'),
+            fusion_mode=fusion_config.get('fusion_mode', 'gated'),
+        )
 
         self.postencoder    = PostEncoder(dim=self.m_config['encoder_kv_dim'], d_model=self.d_model,
                                           dropout=self.m_config['post_encoder_dropout'],
                                           deepth=self.m_config['post_encoder_deepth'])
 
-        self.end_token_logits = nn.Sequential(
+        # Factor-specific prediction heads (Sec. 3.3): termination D_gamma,
+        # articulated state D_s and coarse geometry latent D_v.
+        self.end_head = nn.Sequential(
             nn.Linear(self.d_model, self.d_model),
             nn.GELU(),
             nn.Linear(self.d_model, 1)
         )
+        self.state_head     = MLPUnTokenizer(self.dim_state,
+                                             d_hidden=self.m_config['tokenizer_hidden_dim'],
+                                             d_model=self.d_model,
+                                             drop_out=self.m_config['tokenizer_dropout'])
+        self.geometry_head  = MLPUnTokenizer(self.dim_latent,
+                                             d_hidden=self.m_config['tokenizer_hidden_dim'],
+                                             d_model=self.d_model,
+                                             drop_out=self.m_config['tokenizer_dropout'])
 
         self.layers         = nn.ModuleList([
             DecoderLayer(config)
@@ -102,78 +73,47 @@ class TransformerDecoder(nn.Module):
         return mask
 
     def decode_hidden(self, tokens):
-        """Decode flattened transformer representations into part predictions.
-
-        Keeping this operation public allows inference-time physical guidance
-        to differentiate the structured-state cost with respect to the current
-        token representation without updating model parameters.
-        """
-        end_token_logits = self.end_token_logits(tokens).squeeze(-1)
-
-        decoded_tokens = self.untokenizer(tokens)
-        conditions = decoded_tokens[:, -self.dim_condition:]
-        raw_articulated_info = decoded_tokens[:, :-self.dim_condition]
-
-        if self.use_shape_prior:
-            text_hat_condition = self.to_text_hat_fc(conditions)
-            z_logits_condition = self.to_z_logits_fc(conditions).view(
-                -1,
-                self.diff_config['gsemb_latent_dim'],
-                self.diff_config['gsemb_num_embeddings'],
-            )
-            result_condition = {
-                'text_hat': text_hat_condition,
-                'z_logits': z_logits_condition,
-            }
-        else:
-            result_condition = conditions
-
-        # The decoder predicts three auxiliary bbox dispersion values at
-        # indices 3:6. The released model uses the deterministic bbox-size
-        # prediction at 0:3 and drops those auxiliary values.
-        bbox_size = raw_articulated_info[:, 0:3]
-        articulated_info = torch.cat((bbox_size, raw_articulated_info[:, 6:]), dim=-1)
+        """Decode flattened transformer representations into factor predictions."""
+        end_token_logits = self.end_head(tokens).squeeze(-1)
 
         return {
             'is_end_token_logits': end_token_logits,
-            'articulated_info': articulated_info,
-            'condition': result_condition,
+            'state': self.state_head(tokens),
+            'coarse_latent': self.geometry_head(tokens),
         }
 
     def forward(self, input, padding_mask, enc_data):
-        # ('token'/'dfn'/'dfn_fa') * batch * part_idx * attribute_dim
+        # input['token']: (batch, part_idx, dim_state + dim_latent)
+        # input['fa']:    (batch, part_idx) parent indices
         enc_data = self.postencoder(enc_data)
 
         batch, n_part, _ = input['token'].size()
 
-        # Tokenize the input
-        input['token'] = self.tokenizer(input['token'])
-
-        if self.position_embedding is not None:
-            tokens = self.position_embedding(input)
-        else:
-            tokens = input['token']
+        # Structure-gated latent fusion: geometry enters the joint latent only
+        # through the structure-derived gate (Sec. 3.2).
+        fusion = self.fusion(
+            input['token'][..., :self.dim_state],
+            input['token'][..., self.dim_state:],
+            input['fa'],
+        )
+        tokens = fusion['e']
 
         attn_mask = self.generate_mask(n_part)
 
         cross_attn_weight_list = []
-        vggt_reg_loss = tokens.new_zeros(())
         for idx, layer in enumerate(self.layers):
-            # tokens = layer(tokens, padding_mask, attn_mask, enc_data, None)
-            tokens, cross_attn_weight, layer_vggt_reg = layer(tokens, padding_mask, attn_mask, enc_data)
-            vggt_reg_loss = vggt_reg_loss + layer_vggt_reg
+            tokens, cross_attn_weight = layer(tokens, padding_mask, attn_mask, enc_data)
             cross_attn_weight_list.append(cross_attn_weight.detach().cpu().numpy())
 
-        # Skip padding tokens and retain the representation for optional
-        # inference-time validity-vector intervention.
+        # Skip padding tokens.
         hidden_tokens = tokens[padding_mask > 0.5]
         decoded = self.decode_hidden(hidden_tokens)
 
         result = {
             **decoded,
-            'hidden_tokens': hidden_tokens,
+            'fusion_r': fusion['r'][padding_mask > 0.5],
+            'fusion_h_s': fusion['h_s'],
             'cross_attn_weight_list': cross_attn_weight_list,
-            'vggt_reg_loss': vggt_reg_loss / max(1, len(self.layers)),
         }
 
         return result
