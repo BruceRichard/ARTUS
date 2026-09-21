@@ -32,9 +32,9 @@ $$(\hat{\gamma}_i,\hat{s}_k,\tilde{v}_k) = D_\theta\!\left(F_\theta(\mathcal{A}_
 
 ### 2. Structure-Gated Latent Fusion
 
-Geometry may affect the joint representation only after the articulation feature is established. Structural states and geometry latents are encoded by factor-specific encoders $E_s$ / $E_v$; a bidirectional GRU $G_s$ aggregates the structural features along the root-to-part path $\operatorname{path}_{\pi}(i) = (r,\ldots,\pi(i),i)$:
+Geometry may affect the joint representation only after the articulation feature is established. Structural states and geometry latents are encoded by factor-specific encoders $E_s$ / $E_v$; a bidirectional GRU $G_s$ aggregates the structural features along the root-to-part path $\mathrm{path}_{\pi}(i) = (r,\ldots,\pi(i),i)$:
 
-$$h_i^s = E_s(s_i),\quad h_i^v = E_v(v_i),\quad p_i = G_s\!\left((h_j^s)_{j \in \operatorname{path}_{\pi}(i)}\right),\quad u_i = h_i^s + p_i$$
+$$h_i^s = E_s(s_i),\quad h_i^v = E_v(v_i),\quad p_i = G_s\!\left((h_j^s)_{j \in \mathrm{path}_{\pi}(i)}\right),\quad u_i = h_i^s + p_i$$
 
 A channel-wise gate conditioned solely on the structural representation $u_i$ modulates the geometric channels before fusion:
 
@@ -68,7 +68,7 @@ $$\mathcal L = \mathcal L_{\mathrm{end}} + \alpha\,\mathcal L_{\mathrm{state}} +
 
 where $\mathcal L_{\mathrm{end}}$ is binary cross-entropy on termination, $\mathcal L_{\mathrm{state}}$ / $\mathcal L_{\mathrm{geo}}$ are channel-normalized regression losses, and $\mathcal L_{\mathrm{scl}}$ directly regularizes the structure-controlled joint representation: with $\hat r_k = \hat u_k + \hat g_k \odot E_v(\tilde v_k)$ built from the *predicted* child state and $r_k$ its ground-truth counterpart,
 
-$$\mathcal L_{\mathrm{scl}} = \frac{1}{|\mathcal J|} \sum_{(i,k)\in\mathcal J} \left\| \hat r_k - \operatorname{sg}(r_k) \right\|_2^2 .$$
+$$\mathcal L_{\mathrm{scl}} = \frac{1}{|\mathcal J|} \sum_{(i,k)\in\mathcal J} \left\| \hat r_k - \mathrm{sg}(r_k) \right\|_2^2 .$$
 
 ## Main Results
 
