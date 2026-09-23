@@ -72,7 +72,7 @@ $$\mathcal L_{\mathrm{scl}} = \frac{1}{|\mathcal J|} \sum_{(i,k)\in\mathcal J} \
 
 ## Main Results
 
-PartNet-Mobility + PM-Openable, 12 categories (8 two-part, 2 three-part, 2 multi-part). Mean over 91 test instances; standard deviations and per-group breakdowns are reported in the paper. CD uses $10^{-2}$ units; F-score is a percentage.
+PartNet-Mobility + PM-Openable, 12 unique categories. Complexity groups are assigned per object by movable-part count, so a category may appear in several groups (10 two-part, 4 three-part, 2 complex multi-part category lists overlap). Mean over 91 test instances; standard deviations and per-group breakdowns are reported in the paper. CD uses $10^{-2}$ units; F-score is a percentage.
 
 | Method | CD $\downarrow$ | F-score $\uparrow$ | $d_{\mathrm{gIoU}}$ $\downarrow$ | $d_{c_{\mathrm{Dist}}}$ $\downarrow$ | CLIP $\uparrow$ | POR $\downarrow$ |
 |--------|------|---------|------|------|------|------|
